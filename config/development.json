@@ -1,0 +1,10 @@
+{
+  "dataset_name": "development",
+  "raw_capture": "data/development/raw/adsb_sample.jsonl",
+  "processed_trace": "data/development/processed/experimental_trace.jsonl",
+  "authentication_groups_dir": "data/development/processed/authentication_groups",
+  "analysis_results_dir": "results/development/analysis",
+  "signature_results_dir": "results/development/signatures",
+  "authentication_intervals": [1, 5, 10, 20],
+  "algorithms_config": "config/algorithms.json"
+}

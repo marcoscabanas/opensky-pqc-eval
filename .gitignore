@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+
+# Optional generated data
+# Keep small configuration and metadata versioned, but ignore large future data.
+data/full/
+results/full/
+!data/full/.gitkeep
+!results/full/.gitkeep

@@ -1,0 +1,27 @@
+{
+  "input_file": "test/data/adsb_sample.jsonl",
+  "total_records": 540997,
+  "malformed_records": 0,
+  "capture": {
+    "start_timestamp": 1790258578.187745,
+    "end_timestamp": 1790259218.9796631,
+    "duration_seconds": 640.7919180393219
+  },
+  "downlink_formats": {
+    "11": 407432,
+    "17": 133565
+  },
+  "df17_extended_squitter": {
+    "records": 133565,
+    "percentage_of_total": 24.688676647005437,
+    "unique_icao_addresses": 417,
+    "unique_raw_messages": 78812,
+    "repeated_raw_message_observations": 54753,
+    "mean_messages_per_second": 208.4373979133174,
+    "peak_messages_per_second_1s_bin": 271
+  },
+  "df18_extended_squitter": {
+    "records": 0,
+    "percentage_of_total": 0.0
+  }
+}

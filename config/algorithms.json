@@ -1,0 +1,46 @@
+{
+  "ECDSA-P256": {
+    "enabled": true,
+    "family": "classical",
+    "paper_name": "ECDSA",
+    "parameter_set": "P-256",
+    "module": "src.crypto.ecdsa_p256",
+    "implementation": "SECP256R1",
+    "expected_public_key_bytes": 65,
+    "expected_signature_bytes": 64
+  },
+
+  "ML-DSA-44": {
+    "enabled": true,
+    "family": "post-quantum",
+    "paper_name": "ML-DSA",
+    "parameter_set": "ML-DSA-44",
+    "module": "src.crypto.ml_dsa_44",
+    "implementation": "ML-DSA-44",
+    "expected_public_key_bytes": 1312,
+    "expected_signature_bytes": 2420
+  },
+
+  "FN-DSA-512": {
+    "enabled": true,
+    "family": "post-quantum",
+    "paper_name": "FN-DSA",
+    "parameter_set": "FN-DSA-512",
+    "module": "src.crypto.fn_dsa_512",
+    "implementation": "Falcon-512",
+    "expected_public_key_bytes": 897,
+    "expected_signature_bytes": null,
+    "implementation_note": "Falcon-512 is used as the available liboqs implementation corresponding to the FN-DSA lineage. Actual generated signature lengths are recorded."
+  },
+
+  "SLH-DSA-SHA2-128s": {
+    "enabled": true,
+    "family": "post-quantum",
+    "paper_name": "SLH-DSA",
+    "parameter_set": "SLH-DSA-SHA2-128s",
+    "module": "src.crypto.slh_dsa_sha2_128s",
+    "implementation": "SLH-DSA-SHA2-128s-simple",
+    "expected_public_key_bytes": 32,
+    "expected_signature_bytes": 7856
+  }
+}

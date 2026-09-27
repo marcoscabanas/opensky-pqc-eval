@@ -1,0 +1,295 @@
+{
+  "input_trace": "/Users/marcoscabanas/Documents/opensky-pqc-eval/data/development/processed/experimental_trace.jsonl",
+  "intervals": [
+    1,
+    5,
+    10,
+    20
+  ],
+  "payload_bytes": 14,
+  "bit_rate_bps": 1000000.0,
+  "loss_probability": 0.01,
+  "redundancy_factor": 1.0,
+  "algorithms": [
+    "ECDSA-P256",
+    "ML-DSA-44",
+    "FN-DSA-512",
+    "SLH-DSA-SHA2-128s"
+  ],
+  "summaries": {
+    "1": {
+      "interval_k": 1,
+      "algorithms": {
+        "ECDSA-P256": {
+          "signature_bytes": 64,
+          "fits_single_message": false,
+          "required_fragments": 5
+        },
+        "ML-DSA-44": {
+          "signature_bytes": 2420,
+          "fits_single_message": false,
+          "required_fragments": 173
+        },
+        "FN-DSA-512": {
+          "signature_bytes": 665,
+          "fits_single_message": false,
+          "required_fragments": 48
+        }
+      }
+    },
+    "5": {
+      "interval_k": 5,
+      "algorithms": {
+        "ECDSA-P256": {
+          "signature_bytes": 64,
+          "fits_single_message": false,
+          "required_fragments": 5
+        },
+        "ML-DSA-44": {
+          "signature_bytes": 2420,
+          "fits_single_message": false,
+          "required_fragments": 173
+        },
+        "FN-DSA-512": {
+          "signature_bytes": 665,
+          "fits_single_message": false,
+          "required_fragments": 48
+        }
+      }
+    },
+    "10": {
+      "interval_k": 10,
+      "algorithms": {
+        "ECDSA-P256": {
+          "signature_bytes": 64,
+          "fits_single_message": false,
+          "required_fragments": 5
+        },
+        "ML-DSA-44": {
+          "signature_bytes": 2420,
+          "fits_single_message": false,
+          "required_fragments": 173
+        },
+        "FN-DSA-512": {
+          "signature_bytes": 665,
+          "fits_single_message": false,
+          "required_fragments": 48
+        }
+      }
+    },
+    "20": {
+      "interval_k": 20,
+      "algorithms": {
+        "ECDSA-P256": {
+          "signature_bytes": 64,
+          "fits_single_message": false,
+          "required_fragments": 5
+        },
+        "ML-DSA-44": {
+          "signature_bytes": 2420,
+          "fits_single_message": false,
+          "required_fragments": 173
+        },
+        "FN-DSA-512": {
+          "signature_bytes": 663,
+          "fits_single_message": false,
+          "required_fragments": 48
+        }
+      }
+    }
+  },
+  "rows": [
+    {
+      "algorithm": "ECDSA-P256",
+      "interval_k": 1,
+      "signature_bytes": 64,
+      "fits_single_message": false,
+      "required_fragments": 5,
+      "effective_payload_bytes": 14,
+      "total_signature_bytes_across_events": 8548160,
+      "event_count": 133565,
+      "channel_occupancy_proxy": 0.00047916744656159924,
+      "recovery_probability": 0.9509900498999999,
+      "latency_ms": 2.5599999999999996,
+      "immediate_auth_feasible": false,
+      "detached_auth_feasible": true,
+      "loss_tolerant": true
+    },
+    {
+      "algorithm": "ML-DSA-44",
+      "interval_k": 1,
+      "signature_bytes": 2420,
+      "fits_single_message": false,
+      "required_fragments": 173,
+      "effective_payload_bytes": 14,
+      "total_signature_bytes_across_events": 323227300,
+      "event_count": 133565,
+      "channel_occupancy_proxy": 0.018118519073110472,
+      "recovery_probability": 0.1757473014911758,
+      "latency_ms": 3349.2799999999997,
+      "immediate_auth_feasible": false,
+      "detached_auth_feasible": true,
+      "loss_tolerant": false
+    },
+    {
+      "algorithm": "FN-DSA-512",
+      "interval_k": 1,
+      "signature_bytes": 665,
+      "fits_single_message": false,
+      "required_fragments": 48,
+      "effective_payload_bytes": 14,
+      "total_signature_bytes_across_events": 87490868,
+      "event_count": 133565,
+      "channel_occupancy_proxy": 0.004978849249429117,
+      "recovery_probability": 0.617290140942288,
+      "latency_ms": 255.36000000000004,
+      "immediate_auth_feasible": false,
+      "detached_auth_feasible": true,
+      "loss_tolerant": true
+    },
+    {
+      "algorithm": "ECDSA-P256",
+      "interval_k": 5,
+      "signature_bytes": 64,
+      "fits_single_message": false,
+      "required_fragments": 5,
+      "effective_payload_bytes": 14,
+      "total_signature_bytes_across_events": 1699136,
+      "event_count": 26549,
+      "channel_occupancy_proxy": 0.00047916744656159924,
+      "recovery_probability": 0.9509900498999999,
+      "latency_ms": 2.5599999999999996,
+      "immediate_auth_feasible": false,
+      "detached_auth_feasible": true,
+      "loss_tolerant": true
+    },
+    {
+      "algorithm": "ML-DSA-44",
+      "interval_k": 5,
+      "signature_bytes": 2420,
+      "fits_single_message": false,
+      "required_fragments": 173,
+      "effective_payload_bytes": 14,
+      "total_signature_bytes_across_events": 64248580,
+      "event_count": 26549,
+      "channel_occupancy_proxy": 0.018118519073110472,
+      "recovery_probability": 0.1757473014911758,
+      "latency_ms": 3349.2799999999997,
+      "immediate_auth_feasible": false,
+      "detached_auth_feasible": true,
+      "loss_tolerant": false
+    },
+    {
+      "algorithm": "FN-DSA-512",
+      "interval_k": 5,
+      "signature_bytes": 665,
+      "fits_single_message": false,
+      "required_fragments": 48,
+      "effective_payload_bytes": 14,
+      "total_signature_bytes_across_events": 17391220,
+      "event_count": 26549,
+      "channel_occupancy_proxy": 0.004978849249429117,
+      "recovery_probability": 0.617290140942288,
+      "latency_ms": 255.36000000000004,
+      "immediate_auth_feasible": false,
+      "detached_auth_feasible": true,
+      "loss_tolerant": true
+    },
+    {
+      "algorithm": "ECDSA-P256",
+      "interval_k": 10,
+      "signature_bytes": 64,
+      "fits_single_message": false,
+      "required_fragments": 5,
+      "effective_payload_bytes": 14,
+      "total_signature_bytes_across_events": 843328,
+      "event_count": 13177,
+      "channel_occupancy_proxy": 0.00047916744656159924,
+      "recovery_probability": 0.9509900498999999,
+      "latency_ms": 2.5599999999999996,
+      "immediate_auth_feasible": false,
+      "detached_auth_feasible": true,
+      "loss_tolerant": true
+    },
+    {
+      "algorithm": "ML-DSA-44",
+      "interval_k": 10,
+      "signature_bytes": 2420,
+      "fits_single_message": false,
+      "required_fragments": 173,
+      "effective_payload_bytes": 14,
+      "total_signature_bytes_across_events": 31888340,
+      "event_count": 13177,
+      "channel_occupancy_proxy": 0.018118519073110472,
+      "recovery_probability": 0.1757473014911758,
+      "latency_ms": 3349.2799999999997,
+      "immediate_auth_feasible": false,
+      "detached_auth_feasible": true,
+      "loss_tolerant": false
+    },
+    {
+      "algorithm": "FN-DSA-512",
+      "interval_k": 10,
+      "signature_bytes": 665,
+      "fits_single_message": false,
+      "required_fragments": 48,
+      "effective_payload_bytes": 14,
+      "total_signature_bytes_across_events": 8631606,
+      "event_count": 13177,
+      "channel_occupancy_proxy": 0.004978849249429117,
+      "recovery_probability": 0.617290140942288,
+      "latency_ms": 255.36000000000004,
+      "immediate_auth_feasible": false,
+      "detached_auth_feasible": true,
+      "loss_tolerant": true
+    },
+    {
+      "algorithm": "ECDSA-P256",
+      "interval_k": 20,
+      "signature_bytes": 64,
+      "fits_single_message": false,
+      "required_fragments": 5,
+      "effective_payload_bytes": 14,
+      "total_signature_bytes_across_events": 415104,
+      "event_count": 6486,
+      "channel_occupancy_proxy": 0.00047916744656159924,
+      "recovery_probability": 0.9509900498999999,
+      "latency_ms": 2.5599999999999996,
+      "immediate_auth_feasible": false,
+      "detached_auth_feasible": true,
+      "loss_tolerant": true
+    },
+    {
+      "algorithm": "ML-DSA-44",
+      "interval_k": 20,
+      "signature_bytes": 2420,
+      "fits_single_message": false,
+      "required_fragments": 173,
+      "effective_payload_bytes": 14,
+      "total_signature_bytes_across_events": 15696120,
+      "event_count": 6486,
+      "channel_occupancy_proxy": 0.018118519073110472,
+      "recovery_probability": 0.1757473014911758,
+      "latency_ms": 3349.2799999999997,
+      "immediate_auth_feasible": false,
+      "detached_auth_feasible": true,
+      "loss_tolerant": false
+    },
+    {
+      "algorithm": "FN-DSA-512",
+      "interval_k": 20,
+      "signature_bytes": 663,
+      "fits_single_message": false,
+      "required_fragments": 48,
+      "effective_payload_bytes": 14,
+      "total_signature_bytes_across_events": 4248494,
+      "event_count": 6486,
+      "channel_occupancy_proxy": 0.004963875266724067,
+      "recovery_probability": 0.617290140942288,
+      "latency_ms": 254.59199999999998,
+      "immediate_auth_feasible": false,
+      "detached_auth_feasible": true,
+      "loss_tolerant": true
+    }
+  ]
+}
