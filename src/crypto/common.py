@@ -31,7 +31,7 @@ class OQSSigner:
 
     backend_name = "liboqs"
 
-    def __init__(self, algorithm):
+    def __init__(self, algorithm, *, secret_key=None, public_key=None):
         self.oqs = import_oqs()
         self.algorithm = algorithm
 
@@ -62,13 +62,28 @@ class OQSSigner:
 
             raise RuntimeError(message)
 
-        self.signer = self.oqs.Signature(
-            algorithm
-        )
+        if (secret_key is None) != (public_key is None):
+            raise ValueError("Both secret and public keys are required for resume.")
+        self.signer = self.oqs.Signature(algorithm)
+        if secret_key is None:
+            self.public_key = self.signer.generate_keypair()
+        else:
+            details = self.signer.details
+            if (len(secret_key) != details["length_secret_key"]
+                    or len(public_key) != details["length_public_key"]):
+                self.signer.free()
+                raise ValueError("Checkpoint key length does not match the algorithm.")
+            self.signer.free()
+            self.signer = self.oqs.Signature(algorithm, secret_key=secret_key)
+            self.public_key = public_key
 
-        self.public_key = (
-            self.signer.generate_keypair()
-        )
+    def export_secret_key(self):
+        """Serialize only for a private local experiment checkpoint."""
+        return self.signer.export_secret_key()
+
+    @classmethod
+    def from_secret_key(cls, secret_key, public_key):
+        return cls(secret_key=secret_key, public_key=public_key)
 
     def public_key_bytes(self):
         """Return the generated public key."""

@@ -1,2 +1,3 @@
-cryptography>=50.0.0
-liboqs-python>=0.16.0
+# Complete tested Python environment. Native liboqs is installed separately.
+-r requirements/replay.txt
+-r requirements/crypto.txt

@@ -1,0 +1,31 @@
+name: Replay tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements/replay.txt
+      - run: python -m pip install -r requirements/replay.txt
+      - run: python -m pip check
+      - run: python scripts/check_reproduction.py --inputs-only
+      - name: Run tests that do not need native cryptography
+        run: >-
+          python -m unittest
+          tests.test_delayed_metrics tests.test_delayed_replay
+          tests.test_shared_channel tests.test_channel_trace
+          tests.test_constraint_screening tests.test_hardware_profiles
+          tests.test_replay_experiment tests.test_pipeline
+          tests.test_signed_workload tests.test_signed_replay tests.test_signed_experiment
+          tests.test_reproduction_check -v

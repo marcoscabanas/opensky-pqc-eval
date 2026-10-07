@@ -1,11 +1,31 @@
 .venv/
+.venv-*/
+.deps/
+build/
+dist/
+*.egg-info/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .DS_Store
 
+# Local experiment state includes private keys; never commit it.
+.checkpoints/
+*.partial
+*.lock
+pipeline_status.json
+signature_progress.json
+*.log
+results/**/archive/
+results/development/recovery/
+
 # Optional generated data
+# All new experiments write here. Frozen reference results live in reference/.
+runs/
+# Earlier replay artifacts remain local; the current reference is published separately.
+results/development/replay/
+results/development/delayed_replay/
 # Keep small configuration and metadata versioned, but ignore large future data.
 data/full/
 results/full/

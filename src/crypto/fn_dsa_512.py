@@ -15,7 +15,7 @@ class Signer(OQSSigner):
     assumed to be fixed.
     """
 
-    def __init__(self):
+    def __init__(self, *, secret_key=None, public_key=None):
         super().__init__(
-            IMPLEMENTATION
+            IMPLEMENTATION, secret_key=secret_key, public_key=public_key
         )

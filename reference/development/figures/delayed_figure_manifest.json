@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "plot_version": 1,
+  "replay_model": "delayed_authentication",
+  "selected_interval_k": 5,
+  "source_reports": {
+    "runs/development/replay/replay_summary.json": "08374c54ad3c71f59c9bf8d663211be0a05f34640252b56894361cfda44a0745"
+  },
+  "plot_source_sha256": "6c3d7da3b018dbd4f5d121d9c1dedb963c5fbd72c371cf4db6dbe03747c69ef8",
+  "figure_files": {
+    "authentication_coverage.svg": "c457f83cf99d5c0e749d7b7d0d120ae81a3ac3a3e42f46b2c8c6d60c023ab8ca",
+    "authentication_coverage.png": "59454f48e2396d87b0cf961666dd67cffd519bc88cbacd2d198c1d9d9eb491c4",
+    "authentication_coverage.pdf": "26c42cb023317d28309ce7b27154c921e11b7d163e4b3e3d6be911964eb6343d",
+    "surveillance_impact.svg": "5e285d83e8e393ac04f5361e21f83cad376bd746f68a385cef4b60e81c361977",
+    "surveillance_impact.png": "f7d5fbadcbb69b84798b8a0f88178613b29e58689ffd9def93db6df07bf6b929",
+    "surveillance_impact.pdf": "86e48f08c1d1bd135e32419155643da088e117391eaa3a398c0338f688714440",
+    "authentication_clocks_and_pending.svg": "08ebdae02291af48e121f5a07db7cb7846f18aa64b20ba6226332179a01d9a88",
+    "authentication_clocks_and_pending.png": "d8a29c23db7e18e3b16f82ebe4aa1a702cd9b02659214de1c6556f322cd286bd",
+    "authentication_clocks_and_pending.pdf": "6ed696bf2e3425b193c7dce228b19df14f53606591ead215dafb14f9d8a78448"
+  },
+  "seed_aggregation": "Arithmetic means of per-run fractions or percentiles; no confidence intervals and no pooled delay percentiles.",
+  "interpretation": "Reception-anchored threshold cohorts require full follow-up; horizon-pending authentication remains censored. Destructive overlap is uncalibrated; hardware profiles may include lineage proxies."
+}

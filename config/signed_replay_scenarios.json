@@ -1,0 +1,231 @@
+{
+  "schema_version": 1,
+  "notes": [
+    "The two one-hour datasets have not yet been acquired or evaluated. These are declared experimental settings, not aircraft certification limits.",
+    "Actual signed context plus original-message bytes are cached once per algorithm and exact-count grouping policy and reused across channel and pacing scenarios.",
+    "Ordinary messages are eligible at their trace times and never wait for group formation or signing. They have priority over queued authentication fragments; a fragment already on air finishes first.",
+    "All observed 1090 MHz traffic remains in the channel. Required recording coverage includes the complete fixed follow-up horizon and frame completion.",
+    "A timing-matched no-authentication control separates RF effects of added fragments from shifts caused by contention at the modeled aircraft transmitter.",
+    "Published embedded point estimates model service time. Offline signing wall time is not onboard timing.",
+    "The predeclared follow-up is 600 s: an isolated SLH-DSA k=20 group takes approximately 319 s signing plus 269 s to pace 2691 fragments at 10 frames/s. This engineering observation budget is not a deadline and does not guarantee queues will drain.",
+    "Incomplete exact-count groups remain unsigned; their ordinary messages are still transmitted. Unsent authentication traffic and unverified work at the cutoff are explicitly pending.",
+    "Rates 10, 50, and 100 fragment frames/s per aircraft are declared sensitivity choices, not measured capacity or authorized ADS-B rates.",
+    "One seed value is retained for API compatibility. Zero random erasure, zero jitter, fixed service times, and no synthetic background make each cached-workload replay deterministic; this is not a statistical repetition.",
+    "The baseline receiver uses one verification worker. Separate receiver-capacity sensitivity scenarios can set receiver_workers to 2 or 4."
+  ],
+  "seeds": [
+    1
+  ],
+  "scenarios": [
+    {
+      "name": "detached_independent_r10",
+      "description": "Real detached signatures over exact-count groups; ordinary transmission proceeds independently of signing.",
+      "sender_profile": "embedded_reference",
+      "receiver_profile": "embedded_reference",
+      "parameters": {
+        "replay_model": "signed_detached",
+        "followup_s": 600,
+        "coverage_thresholds_s": [
+          1,
+          5,
+          10,
+          30,
+          60,
+          300,
+          600
+        ],
+        "max_batch_wait_s": null,
+        "auth_frames_per_second": 10,
+        "sender_queue_limit": null,
+        "transmission_queue_limit": null,
+        "receiver_queue_limit": null,
+        "receiver_workers": 1,
+        "fragment_copies": 1,
+        "receive_jitter_ms": 0,
+        "loss": {
+          "kind": "iid",
+          "probability": 0
+        },
+        "max_events": 20000000,
+        "record_events": false,
+        "channel_mode": "independent",
+        "background_frames_per_second": 0
+      }
+    },
+    {
+      "name": "detached_collision_r10",
+      "description": "Real detached signatures over exact-count groups; ordinary transmission proceeds independently of signing.",
+      "sender_profile": "embedded_reference",
+      "receiver_profile": "embedded_reference",
+      "parameters": {
+        "replay_model": "signed_detached",
+        "followup_s": 600,
+        "coverage_thresholds_s": [
+          1,
+          5,
+          10,
+          30,
+          60,
+          300,
+          600
+        ],
+        "max_batch_wait_s": null,
+        "auth_frames_per_second": 10,
+        "sender_queue_limit": null,
+        "transmission_queue_limit": null,
+        "receiver_queue_limit": null,
+        "receiver_workers": 1,
+        "fragment_copies": 1,
+        "receive_jitter_ms": 0,
+        "loss": {
+          "kind": "iid",
+          "probability": 0
+        },
+        "max_events": 20000000,
+        "record_events": false,
+        "channel_mode": "destructive_overlap",
+        "background_frames_per_second": 0
+      }
+    },
+    {
+      "name": "detached_independent_r50",
+      "description": "Real detached signatures over exact-count groups; ordinary transmission proceeds independently of signing.",
+      "sender_profile": "embedded_reference",
+      "receiver_profile": "embedded_reference",
+      "parameters": {
+        "replay_model": "signed_detached",
+        "followup_s": 600,
+        "coverage_thresholds_s": [
+          1,
+          5,
+          10,
+          30,
+          60,
+          300,
+          600
+        ],
+        "max_batch_wait_s": null,
+        "auth_frames_per_second": 50,
+        "sender_queue_limit": null,
+        "transmission_queue_limit": null,
+        "receiver_queue_limit": null,
+        "receiver_workers": 1,
+        "fragment_copies": 1,
+        "receive_jitter_ms": 0,
+        "loss": {
+          "kind": "iid",
+          "probability": 0
+        },
+        "max_events": 20000000,
+        "record_events": false,
+        "channel_mode": "independent",
+        "background_frames_per_second": 0
+      }
+    },
+    {
+      "name": "detached_collision_r50",
+      "description": "Real detached signatures over exact-count groups; ordinary transmission proceeds independently of signing.",
+      "sender_profile": "embedded_reference",
+      "receiver_profile": "embedded_reference",
+      "parameters": {
+        "replay_model": "signed_detached",
+        "followup_s": 600,
+        "coverage_thresholds_s": [
+          1,
+          5,
+          10,
+          30,
+          60,
+          300,
+          600
+        ],
+        "max_batch_wait_s": null,
+        "auth_frames_per_second": 50,
+        "sender_queue_limit": null,
+        "transmission_queue_limit": null,
+        "receiver_queue_limit": null,
+        "receiver_workers": 1,
+        "fragment_copies": 1,
+        "receive_jitter_ms": 0,
+        "loss": {
+          "kind": "iid",
+          "probability": 0
+        },
+        "max_events": 20000000,
+        "record_events": false,
+        "channel_mode": "destructive_overlap",
+        "background_frames_per_second": 0
+      }
+    },
+    {
+      "name": "detached_independent_r100",
+      "description": "Real detached signatures over exact-count groups; ordinary transmission proceeds independently of signing.",
+      "sender_profile": "embedded_reference",
+      "receiver_profile": "embedded_reference",
+      "parameters": {
+        "replay_model": "signed_detached",
+        "followup_s": 600,
+        "coverage_thresholds_s": [
+          1,
+          5,
+          10,
+          30,
+          60,
+          300,
+          600
+        ],
+        "max_batch_wait_s": null,
+        "auth_frames_per_second": 100,
+        "sender_queue_limit": null,
+        "transmission_queue_limit": null,
+        "receiver_queue_limit": null,
+        "receiver_workers": 1,
+        "fragment_copies": 1,
+        "receive_jitter_ms": 0,
+        "loss": {
+          "kind": "iid",
+          "probability": 0
+        },
+        "max_events": 20000000,
+        "record_events": false,
+        "channel_mode": "independent",
+        "background_frames_per_second": 0
+      }
+    },
+    {
+      "name": "detached_collision_r100",
+      "description": "Real detached signatures over exact-count groups; ordinary transmission proceeds independently of signing.",
+      "sender_profile": "embedded_reference",
+      "receiver_profile": "embedded_reference",
+      "parameters": {
+        "replay_model": "signed_detached",
+        "followup_s": 600,
+        "coverage_thresholds_s": [
+          1,
+          5,
+          10,
+          30,
+          60,
+          300,
+          600
+        ],
+        "max_batch_wait_s": null,
+        "auth_frames_per_second": 100,
+        "sender_queue_limit": null,
+        "transmission_queue_limit": null,
+        "receiver_queue_limit": null,
+        "receiver_workers": 1,
+        "fragment_copies": 1,
+        "receive_jitter_ms": 0,
+        "loss": {
+          "kind": "iid",
+          "probability": 0
+        },
+        "max_events": 20000000,
+        "record_events": false,
+        "channel_mode": "destructive_overlap",
+        "background_frames_per_second": 0
+      }
+    }
+  ]
+}

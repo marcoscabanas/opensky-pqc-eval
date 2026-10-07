@@ -1,0 +1,6 @@
+# Real cryptography tests and optional exhaustive signing.
+# Requires native liboqs 0.16.0; see docs/native_crypto.md.
+cryptography==50.0.1
+liboqs-python==0.16.0.1
+cffi==2.1.1
+pycparser==3.0

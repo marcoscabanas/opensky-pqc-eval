@@ -1,0 +1,160 @@
+% Planned detached-authentication experiment; requires amsmath.
+% Acquisition metadata and final results remain pending.
+\section{Trace-Driven Experimental Methodology}
+\label{sec:methodology}
+
+The experiment evaluates the cost of adding real digital signatures to
+recorded ADS-B traffic. Ordinary messages remain eligible for transmission
+independently of signing. Their reception and subsequent authentication are
+measured separately, together with processing demand and additional
+channel interference.
+
+\subsection{Dataset}
+\label{subsec:opensky-dataset}
+
+The planned evaluation uses two one-hour observation windows from
+[REGION, DATES, AND ACQUISITION SYSTEM], selected to represent different
+recorded traffic intensities. These are empirical scenarios, not statistical
+repetitions. OpenSky observations provide the target ADS-B messages
+\cite{Schafer2014OpenSky,Strohmeier2014OpenSky}. Preprocessing retains valid
+DF17 observations, their original 14-byte messages, aircraft addresses, and
+timestamps. Repeated message contents are preserved: identical bytes alone
+do not establish duplicate observations of one physical transmission.
+
+An aligned channel trace supplies all recorded 1090~MHz events, including
+non-target traffic, with their timing and justified durations. Undecodable
+activity is included only if recorded by the acquisition system. A
+decoded-message feed cannot establish complete RF occupancy; acquisition
+coverage and limitations are reported. Each target links to one channel
+event to avoid double counting. Every configuration uses the same input
+for its window, without synthetic ordinary traffic. Final dataset counts
+and acquisition metadata remain to be completed.
+
+\subsection{Signing and Transmission}
+\label{subsec:replay-simulator}
+
+We compare ECDSA-P256, ML-DSA-44, Falcon-512, and SLH-DSA-SHA2-128s using
+groups of $k\in\{1,5,10,20\}$ consecutive messages per aircraft. Groups close
+only after exactly $k$ messages are available, without a timeout. Each
+ordinary message becomes eligible for transmission at its trace timestamp,
+while a copy is retained for signing. Complete groups enter the signing
+queue. Incomplete final groups remain unsigned, but their messages still
+transmit. Thus, $k=1$ is per-message detached authentication, without
+collection delay, rather than instantaneous authentication.
+
+Each aircraft has its own key pair within each signed workload. Real
+signatures cover the ordered original bytes and explicitly encoded
+association context. Signed objects are reused across channel and rate
+configurations. The context contains aircraft, algorithm, session, sequence,
+source-time, message-count, key-fingerprint, and ordered message-tag fields;
+the repository specifies their byte layout.
+
+For an $s$-byte signature, the stream contains $52+8k$ context bytes, two
+signature-length bytes, the signature, and two stream-length bytes. Each
+hypothetical seven-byte ME field carries a two-byte group sequence, a
+two-byte fragment index, and three stream bytes. Therefore,
+\[
+ F_{\mathrm{prototype}}=\left\lceil\frac{56+8k+s}{3}\right\rceil,
+ \qquad F_{\min}=\left\lceil\frac{s}{7}\right\rceil.
+\]
+The second quantity is an analytical signature-only lower bound omitting
+metadata, not a second executable protocol. Fragments occupy
+$120~\mu$s frames. This research encoding has no allocated operational
+ADS-B message type. Keys and sessions are provisioned separately;
+credential traffic, retransmission, and error correction are excluded.
+
+Each aircraft has one simulated transmitter. Ready ordinary messages have
+priority, but an ongoing authentication frame finishes before another
+starts. Fragment starts are paced at $r\in\{10,50,100\}$ frames/s per
+aircraft. This changes when traffic is offered, not the bytes required for
+a fixed workload; increased collisions may offset faster transmission.
+Non-target events cause receiver interference but do not reserve the
+modeled aircraft transmitter.
+
+\subsection{Computational Model}
+\label{subsec:computational-model}
+
+Host execution generates valid cryptographic objects; published embedded
+measurements determine simulated processing times. ECDSA uses the
+P256-Cortex-M4 report for an nRF52840 at 64~MHz \cite{P256CortexM4}.
+Post-quantum timings use pqm4 cycle counts and its 24~MHz benchmark clock
+\cite{PQM4Benchmarks,PQM4Platform}. Provisional FN-DSA and SPHINCS+
+measurements approximate Falcon and SLH-DSA, respectively. ECDSA timings
+exclude external hashing and nonce generation. Fixed representative times
+omit execution-time and message-length variability. These heterogeneous
+references define service-demand scenarios, not a controlled algorithm
+ranking or measured aircraft performance.
+
+There is one signing worker per aircraft and one receiver verification
+worker. If verification queues grow persistently, affected configurations
+are additionally evaluated with two and four receiver workers. Service
+demand and backlog assess processing feasibility; memory, energy, and
+contention with other applications require separate measurements.
+
+\subsection{Channel Comparison}
+\label{subsec:experimental-variables}
+
+Each configuration is evaluated with a collision-free control and a
+destructive-overlap model that discards overlapping frames within one
+collision domain. The latter is an uncalibrated interference sensitivity
+model, omitting received power, capture effects, and receiver geometry.
+No artificial random erasure or timing jitter is added. Fixed timings and
+cached signatures make each replay deterministic, so repeated random seeds
+are unnecessary. The main matrix contains 96 configurations per window:
+four algorithms, four group sizes, three rates, and two channel models.
+
+The unsigned baseline retains recorded event times. The augmented replay
+replaces each target event with its scheduled transmission and adds
+fragments; other recorded events retain their times. A timing-matched
+control removes fragments while retaining the augmented ordinary schedule.
+These comparisons distinguish the overall authentication effect from
+direct fragment interference. Inter-aircraft overlap causes losses, rather
+than a channel-wide transmission waiting queue.
+
+\subsection{Metrics and Observation Period}
+\label{subsec:evaluation-metrics}
+
+Let $t_0$, $t_{\mathrm{tx}}$, $t_{\mathrm{rx}}$, and $t_{\mathrm{auth}}$
+denote a message's trace, transmission, reception, and successful
+authentication times. We report
+\[
+ D_{\mathrm{tx}}=t_{\mathrm{tx}}-t_0,
+ \qquad D_{\mathrm{auth}}=t_{\mathrm{auth}}-t_{\mathrm{rx}}.
+\]
+Collection and signing waits contribute to authentication latency; ordinary
+delay reflects transmitter scheduling. Trace timestamps do not reveal
+sensor measurement times, so these are added modeled delays rather than
+total sensor-to-transmission latency.
+
+The receiver retains ordinary messages, reconstructs delivered authentication
+objects, and performs real verification using received bytes. Association
+uses signed tags and source-time intervals with a conservative timing bound
+derived from the input arrivals and transmitter rules; a shared clock is
+assumed. All originals in a group are required. Results distinguish
+ordinary reception, object reconstruction, verification attempts and
+failures, successful authentication, and unfinished work. We report
+authentication coverage over all targets and over received targets,
+completed-case latency distributions, reception gaps, additional frames
+and airtime, processor demand, and queue backlog. Offered airtime can
+exceed elapsed time because transmissions overlap; it is not RF occupancy.
+
+A fixed 600~s follow-up is declared before final runs. Queues start empty
+at each window's beginning. An isolated largest
+SLH-DSA group at $r=10$ requires approximately 589~s for signing, fragment
+delivery, and verification under the selected profiles, motivating this
+observation budget. Queue clearance is not guaranteed. No new target
+groups begin during follow-up, while recorded surrounding traffic
+continues through the cutoff, including frame completion. Unfinished work
+remains pending rather than a definitive failure. Delay-threshold coverage
+includes only messages with sufficient observed follow-up, with exclusions
+reported.
+
+\subsection{Reproducibility}
+\label{subsec:reproducibility}
+
+Inputs, source versions, benchmark references, configurations, and checksums
+are retained. Cached signatures and public keys preserve the exact objects
+across replays; regenerating them may change their bytes or lengths.
+Separate commands and output directories reproduce both windows. The
+existing sample validates implementation; acquisition, final execution,
+and analysis of the two windows remain pending.

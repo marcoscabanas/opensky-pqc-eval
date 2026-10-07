@@ -1,4 +1,5 @@
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import (
     decode_dss_signature,
@@ -44,6 +45,25 @@ class Signer:
         )
 
         return b"\x04" + x + y
+
+    def export_secret_key(self):
+        """Serialize only for a private local experiment checkpoint."""
+        return self.private_key.private_bytes(
+            serialization.Encoding.DER,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+
+    @classmethod
+    def from_secret_key(cls, secret_key, public_key):
+        instance = cls.__new__(cls)
+        instance.private_key = serialization.load_der_private_key(secret_key, password=None)
+        if not isinstance(instance.private_key, ec.EllipticCurvePrivateKey) or not isinstance(instance.private_key.curve, ec.SECP256R1):
+            raise ValueError("Checkpoint key must be ECDSA P-256.")
+        instance.public_key = instance.private_key.public_key()
+        if instance.public_key_bytes() != public_key:
+            raise ValueError("Checkpoint public key does not match the private key.")
+        return instance
 
     def sign(self, message):
         """Generate a fixed-width 64-byte ECDSA signature."""

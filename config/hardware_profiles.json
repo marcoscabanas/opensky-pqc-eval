@@ -1,0 +1,463 @@
+{
+  "schema_version": 1,
+  "source_access_date": "2026-10-06",
+  "notes": [
+    "execution_count records the publication's run count, not the number of empirical samples provided: published tables expose summary statistics only.",
+    "For pqm4 mean timing: milliseconds = cycles / (clock_mhz * 1000). Source minimum and maximum are metadata; they are not sampled as if they were raw data."
+  ],
+  "profiles": {
+    "embedded_reference": {
+      "id": "embedded_reference",
+      "label": "Published embedded composite with explicit Falcon / SLH lineage proxies",
+      "kind": "composite_proxy",
+      "platform": "Mixed: P-256 nRF52840 at 64 MHz; PQ reference Cortex-M4 at 24 MHz",
+      "limitations": [
+        "Composite of different platforms and implementations, not a single measured aircraft or receiver.",
+        "Published means or rounded estimates are repeated constants, not empirical distributions or worst-case execution times.",
+        "59-byte PQ benchmark messages and prehashed ECDSA are approximations for the replay signed transcripts. Message-length scaling and ECDSA hashing/nonce costs are not measured.",
+        "Operating system scheduling, other onboard workloads, energy, thermal behavior, fault tolerance and certification are outside these timings.",
+        "Using this profile for ground verification represents a constrained embedded receiver; it does not describe a modern ground server.",
+        "Key generation is recorded separately and is not charged per signature; public-key provisioning and certificate checks need a separate model."
+      ],
+      "algorithms": {
+        "ECDSA-P256": {
+          "implementation": "Emill/P256-Cortex-M4 ECDSA P-256 assembly",
+          "equivalence": "exact_parameter_set",
+          "limitation": "Same P-256 parameters, different implementation from Python cryptography. Published rounded times; message hashing and nonce generation are external to the API and not included. Original message length and run sample count not stated.",
+          "source_urls": [
+            "https://github.com/Emill/P256-Cortex-M4/blob/ecd3ec2222fc9e18b6b44c86bb7183971a2041fc/README.md",
+            "https://github.com/Emill/P256-Cortex-M4/blob/ecd3ec2222fc9e18b6b44c86bb7183971a2041fc/p256-cortex-m4.h"
+          ],
+          "source_commit": "ecd3ec2222fc9e18b6b44c86bb7183971a2041fc",
+          "source_file_sha256": "1dafa9c8726689d0c394ef2f63ea4b7d550d6b28ec93482fe2d9ef2d913d204f",
+          "platform": "Nordic nRF52840 Cortex-M4; instruction cache enabled",
+          "clock_mhz": 64,
+          "compiler": "GCC; version not stated",
+          "compiler_flags": "-O2",
+          "message_length_bytes": null,
+          "timing_scope": "ECDSA arithmetic over a supplied digest; signing nonce generation and original-message hashing excluded.",
+          "memory": {
+            "stack_upper_bound_kb": 2,
+            "scope": "Library author reports at most 2 kB stack; not a per-operation full system memory measurement."
+          },
+          "operations": {
+            "keygen": {
+              "samples_ms": [
+                5.1
+              ],
+              "sample_kind": "published_estimate",
+              "cycles_approximate": 327000,
+              "clock_mhz": 64
+            },
+            "sign": {
+              "samples_ms": [
+                5.9
+              ],
+              "sample_kind": "published_estimate",
+              "cycles_approximate": 375000,
+              "clock_mhz": 64
+            },
+            "verify": {
+              "samples_ms": [
+                15.3
+              ],
+              "sample_kind": "published_estimate",
+              "cycles_approximate": 976000,
+              "clock_mhz": 64
+            }
+          }
+        },
+        "ML-DSA-44": {
+          "implementation": "pqm4 ml-dsa-44 m4f",
+          "equivalence": "exact_parameter_set",
+          "limitation": "ML-DSA-44 parameter set; embedded implementation differs from project liboqs. Timing distribution unavailable; repeated mean is only a constant-service baseline.",
+          "source_urls": [
+            "https://github.com/mupq/pqm4/blob/90bfb630e53603b4e273a131cd09a025e51540a5/benchmarks.md",
+            "https://github.com/mupq/pqm4/blob/90bfb630e53603b4e273a131cd09a025e51540a5/README.md",
+            "https://github.com/mupq/mupq/blob/ddcccedb2db9d0250856bd58ee5c46c61e506c5d/crypto_sign/speed.c"
+          ],
+          "source_commit": "90bfb630e53603b4e273a131cd09a025e51540a5",
+          "source_file_sha256": "3fe9c5d060b2fa5099830729c60670940e2d867df375de4f73e7ea7e1d69d930",
+          "platform": "ARM Cortex-M4; table does not name the measured board; repository default is NUCLEO-L4R5ZI",
+          "clock_mhz": 24,
+          "compiler": "arm-none-eabi-gcc (Arm GNU Toolchain 11.3.Rel1) 11.3.1 20220712",
+          "compiler_flags": "Not specified with the published table; do not infer flags for this run.",
+          "message_length_bytes": 59,
+          "message_length_source": "https://github.com/mupq/mupq/blob/ddcccedb2db9d0250856bd58ee5c46c61e506c5d/crypto_sign/speed.c",
+          "timing_scope": "crypto_sign / crypto_sign_open calls on 59-byte messages; fixed service-time approximation for other lengths; not this project liboqs wrapper.",
+          "memory": {
+            "stack_bytes": {
+              "keygen": 38296,
+              "sign": 44816,
+              "verify": 8912
+            },
+            "scope": "Stack inside operation only; excludes caller key, signature and message buffers. Not total process RAM."
+          },
+          "operations": {
+            "keygen": {
+              "samples_ms": [
+                59.41770833333333
+              ],
+              "sample_kind": "published_mean",
+              "cycles_mean": 1426025,
+              "cycles_min": 1379650,
+              "cycles_max": 1466529,
+              "clock_mhz": 24,
+              "execution_count": 1000
+            },
+            "sign": {
+              "samples_ms": [
+                164.29670833333333
+              ],
+              "sample_kind": "published_mean",
+              "cycles_mean": 3943121,
+              "cycles_min": 1812557,
+              "cycles_max": 17009165,
+              "clock_mhz": 24,
+              "execution_count": 1000
+            },
+            "verify": {
+              "samples_ms": [
+                59.234291666666664
+              ],
+              "sample_kind": "published_mean",
+              "cycles_mean": 1421623,
+              "cycles_min": 1420738,
+              "cycles_max": 1422362,
+              "clock_mhz": 24,
+              "execution_count": 1000
+            }
+          }
+        },
+        "FN-DSA-512": {
+          "implementation": "pqm4 fndsa_provisional-512 m4f",
+          "equivalence": "lineage_proxy",
+          "limitation": "Provisional FN-DSA-512 is a lineage proxy for the project Falcon-512 implementation; neither exact algorithm/encoding equivalence nor final FN-DSA compliance is asserted.",
+          "source_urls": [
+            "https://github.com/mupq/pqm4/blob/90bfb630e53603b4e273a131cd09a025e51540a5/benchmarks.md",
+            "https://github.com/mupq/pqm4/blob/90bfb630e53603b4e273a131cd09a025e51540a5/README.md",
+            "https://github.com/mupq/mupq/blob/ddcccedb2db9d0250856bd58ee5c46c61e506c5d/crypto_sign/speed.c"
+          ],
+          "source_commit": "90bfb630e53603b4e273a131cd09a025e51540a5",
+          "source_file_sha256": "3fe9c5d060b2fa5099830729c60670940e2d867df375de4f73e7ea7e1d69d930",
+          "platform": "ARM Cortex-M4; table does not name the measured board; repository default is NUCLEO-L4R5ZI",
+          "clock_mhz": 24,
+          "compiler": "arm-none-eabi-gcc (Arm GNU Toolchain 11.3.Rel1) 11.3.1 20220712",
+          "compiler_flags": "Not specified with the published table; do not infer flags for this run.",
+          "message_length_bytes": 59,
+          "message_length_source": "https://github.com/mupq/mupq/blob/ddcccedb2db9d0250856bd58ee5c46c61e506c5d/crypto_sign/speed.c",
+          "timing_scope": "crypto_sign / crypto_sign_open calls on 59-byte messages; fixed service-time approximation for other lengths; not this project liboqs wrapper.",
+          "memory": {
+            "stack_bytes": {
+              "keygen": 14348,
+              "sign": 41952,
+              "verify": 2976
+            },
+            "scope": "Stack inside operation only; excludes caller key, signature and message buffers. Not total process RAM."
+          },
+          "operations": {
+            "keygen": {
+              "samples_ms": [
+                2820.55575
+              ],
+              "sample_kind": "published_mean",
+              "cycles_mean": 67693338,
+              "cycles_min": 57825106,
+              "cycles_max": 81542705,
+              "clock_mhz": 24,
+              "execution_count": 10
+            },
+            "sign": {
+              "samples_ms": [
+                936.236875
+              ],
+              "sample_kind": "published_mean",
+              "cycles_mean": 22469685,
+              "cycles_min": 22280159,
+              "cycles_max": 22594542,
+              "clock_mhz": 24,
+              "execution_count": 10
+            },
+            "verify": {
+              "samples_ms": [
+                16.53954166666667
+              ],
+              "sample_kind": "published_mean",
+              "cycles_mean": 396949,
+              "cycles_min": 390368,
+              "cycles_max": 406553,
+              "clock_mhz": 24,
+              "execution_count": 10
+            }
+          }
+        },
+        "SLH-DSA-SHA2-128s": {
+          "implementation": "pqm4 sphincs-sha2-128s-simple clean",
+          "equivalence": "lineage_proxy",
+          "limitation": "Pre-standard SPHINCS+-SHA2-128s-simple is an explicitly approximate proxy for SLH-DSA-SHA2-128s. It is not a FIPS 205 timing measurement; message formatting and implementation differ.",
+          "source_urls": [
+            "https://github.com/mupq/pqm4/blob/90bfb630e53603b4e273a131cd09a025e51540a5/benchmarks.md",
+            "https://github.com/mupq/pqm4/blob/90bfb630e53603b4e273a131cd09a025e51540a5/README.md",
+            "https://github.com/mupq/mupq/blob/ddcccedb2db9d0250856bd58ee5c46c61e506c5d/crypto_sign/speed.c"
+          ],
+          "source_commit": "90bfb630e53603b4e273a131cd09a025e51540a5",
+          "source_file_sha256": "3fe9c5d060b2fa5099830729c60670940e2d867df375de4f73e7ea7e1d69d930",
+          "platform": "ARM Cortex-M4; table does not name the measured board; repository default is NUCLEO-L4R5ZI",
+          "clock_mhz": 24,
+          "compiler": "arm-none-eabi-gcc (Arm GNU Toolchain 11.3.Rel1) 11.3.1 20220712",
+          "compiler_flags": "Not specified with the published table; do not infer flags for this run.",
+          "message_length_bytes": 59,
+          "message_length_source": "https://github.com/mupq/mupq/blob/ddcccedb2db9d0250856bd58ee5c46c61e506c5d/crypto_sign/speed.c",
+          "timing_scope": "crypto_sign / crypto_sign_open calls on 59-byte messages; fixed service-time approximation for other lengths; not this project liboqs wrapper.",
+          "memory": {
+            "stack_bytes": {
+              "keygen": 3084,
+              "sign": 2556,
+              "verify": 1968
+            },
+            "scope": "Stack inside operation only; excludes caller key, signature and message buffers. Not total process RAM."
+          },
+          "operations": {
+            "keygen": {
+              "samples_ms": [
+                41988.813416666664
+              ],
+              "sample_kind": "published_mean",
+              "cycles_mean": 1007731522,
+              "cycles_min": 1007731504,
+              "cycles_max": 1007731551,
+              "clock_mhz": 24,
+              "execution_count": 10
+            },
+            "sign": {
+              "samples_ms": [
+                319064.92366666667
+              ],
+              "sample_kind": "published_mean",
+              "cycles_mean": 7657558168,
+              "cycles_min": 7657558117,
+              "cycles_max": 7657558212,
+              "clock_mhz": 24,
+              "execution_count": 10
+            },
+            "verify": {
+              "samples_ms": [
+                311.32475
+              ],
+              "sample_kind": "published_mean",
+              "cycles_mean": 7471794,
+              "cycles_min": 7228491,
+              "cycles_max": 7797915,
+              "clock_mhz": 24,
+              "execution_count": 10
+            }
+          }
+        }
+      }
+    },
+    "pqm4_mldsa44_reference": {
+      "id": "pqm4_mldsa44_reference",
+      "label": "Published pqm4 ML-DSA-44 m4f only",
+      "kind": "published_reference",
+      "platform": "ARM Cortex-M4 at 24 MHz; board unspecified in benchmark table",
+      "limitations": [
+        "Published means or rounded estimates are repeated constants, not empirical distributions or worst-case execution times.",
+        "59-byte PQ benchmark messages and prehashed ECDSA are approximations for the replay signed transcripts. Message-length scaling and ECDSA hashing/nonce costs are not measured.",
+        "Operating system scheduling, other onboard workloads, energy, thermal behavior, fault tolerance and certification are outside these timings."
+      ],
+      "algorithms": {
+        "ML-DSA-44": {
+          "implementation": "pqm4 ml-dsa-44 m4f",
+          "equivalence": "exact_parameter_set",
+          "limitation": "ML-DSA-44 parameter set; embedded implementation differs from project liboqs. Timing distribution unavailable; repeated mean is only a constant-service baseline.",
+          "source_urls": [
+            "https://github.com/mupq/pqm4/blob/90bfb630e53603b4e273a131cd09a025e51540a5/benchmarks.md",
+            "https://github.com/mupq/pqm4/blob/90bfb630e53603b4e273a131cd09a025e51540a5/README.md",
+            "https://github.com/mupq/mupq/blob/ddcccedb2db9d0250856bd58ee5c46c61e506c5d/crypto_sign/speed.c"
+          ],
+          "source_commit": "90bfb630e53603b4e273a131cd09a025e51540a5",
+          "source_file_sha256": "3fe9c5d060b2fa5099830729c60670940e2d867df375de4f73e7ea7e1d69d930",
+          "platform": "ARM Cortex-M4; table does not name the measured board; repository default is NUCLEO-L4R5ZI",
+          "clock_mhz": 24,
+          "compiler": "arm-none-eabi-gcc (Arm GNU Toolchain 11.3.Rel1) 11.3.1 20220712",
+          "compiler_flags": "Not specified with the published table; do not infer flags for this run.",
+          "message_length_bytes": 59,
+          "message_length_source": "https://github.com/mupq/mupq/blob/ddcccedb2db9d0250856bd58ee5c46c61e506c5d/crypto_sign/speed.c",
+          "timing_scope": "crypto_sign / crypto_sign_open calls on 59-byte messages; fixed service-time approximation for other lengths; not this project liboqs wrapper.",
+          "memory": {
+            "stack_bytes": {
+              "keygen": 38296,
+              "sign": 44816,
+              "verify": 8912
+            },
+            "scope": "Stack inside operation only; excludes caller key, signature and message buffers. Not total process RAM."
+          },
+          "operations": {
+            "keygen": {
+              "samples_ms": [
+                59.41770833333333
+              ],
+              "sample_kind": "published_mean",
+              "cycles_mean": 1426025,
+              "cycles_min": 1379650,
+              "cycles_max": 1466529,
+              "clock_mhz": 24,
+              "execution_count": 1000
+            },
+            "sign": {
+              "samples_ms": [
+                164.29670833333333
+              ],
+              "sample_kind": "published_mean",
+              "cycles_mean": 3943121,
+              "cycles_min": 1812557,
+              "cycles_max": 17009165,
+              "clock_mhz": 24,
+              "execution_count": 1000
+            },
+            "verify": {
+              "samples_ms": [
+                59.234291666666664
+              ],
+              "sample_kind": "published_mean",
+              "cycles_mean": 1421623,
+              "cycles_min": 1420738,
+              "cycles_max": 1422362,
+              "clock_mhz": 24,
+              "execution_count": 1000
+            }
+          }
+        }
+      }
+    },
+    "ecdsa_m4_reference": {
+      "id": "ecdsa_m4_reference",
+      "label": "Published P-256 nRF52840 reference only",
+      "kind": "published_reference",
+      "platform": "Nordic nRF52840 Cortex-M4 at 64 MHz with ICACHE",
+      "limitations": [
+        "Published means or rounded estimates are repeated constants, not empirical distributions or worst-case execution times.",
+        "59-byte PQ benchmark messages and prehashed ECDSA are approximations for the replay signed transcripts. Message-length scaling and ECDSA hashing/nonce costs are not measured.",
+        "Operating system scheduling, other onboard workloads, energy, thermal behavior, fault tolerance and certification are outside these timings."
+      ],
+      "algorithms": {
+        "ECDSA-P256": {
+          "implementation": "Emill/P256-Cortex-M4 ECDSA P-256 assembly",
+          "equivalence": "exact_parameter_set",
+          "limitation": "Same P-256 parameters, different implementation from Python cryptography. Published rounded times; message hashing and nonce generation are external to the API and not included. Original message length and run sample count not stated.",
+          "source_urls": [
+            "https://github.com/Emill/P256-Cortex-M4/blob/ecd3ec2222fc9e18b6b44c86bb7183971a2041fc/README.md",
+            "https://github.com/Emill/P256-Cortex-M4/blob/ecd3ec2222fc9e18b6b44c86bb7183971a2041fc/p256-cortex-m4.h"
+          ],
+          "source_commit": "ecd3ec2222fc9e18b6b44c86bb7183971a2041fc",
+          "source_file_sha256": "1dafa9c8726689d0c394ef2f63ea4b7d550d6b28ec93482fe2d9ef2d913d204f",
+          "platform": "Nordic nRF52840 Cortex-M4; instruction cache enabled",
+          "clock_mhz": 64,
+          "compiler": "GCC; version not stated",
+          "compiler_flags": "-O2",
+          "message_length_bytes": null,
+          "timing_scope": "ECDSA arithmetic over a supplied digest; signing nonce generation and original-message hashing excluded.",
+          "memory": {
+            "stack_upper_bound_kb": 2,
+            "scope": "Library author reports at most 2 kB stack; not a per-operation full system memory measurement."
+          },
+          "operations": {
+            "keygen": {
+              "samples_ms": [
+                5.1
+              ],
+              "sample_kind": "published_estimate",
+              "cycles_approximate": 327000,
+              "clock_mhz": 64
+            },
+            "sign": {
+              "samples_ms": [
+                5.9
+              ],
+              "sample_kind": "published_estimate",
+              "cycles_approximate": 375000,
+              "clock_mhz": 64
+            },
+            "verify": {
+              "samples_ms": [
+                15.3
+              ],
+              "sample_kind": "published_estimate",
+              "cycles_approximate": 976000,
+              "clock_mhz": 64
+            }
+          }
+        }
+      }
+    },
+    "assumed_receiver_1ms": {
+      "id": "assumed_receiver_1ms",
+      "label": "Assumed 1 ms verification service per algorithm; capacity sensitivity only",
+      "kind": "sensitivity_assumption",
+      "platform": "Abstract verification server; no physical processor or benchmark claimed",
+      "limitations": [
+        "All algorithms receive the same assumed 1 ms verification time to isolate receiver-capacity sensitivity.",
+        "This is neither a measured host benchmark nor an aircraft/server feasibility claim.",
+        "Signing and key generation are intentionally unavailable."
+      ],
+      "algorithms": {
+        "ECDSA-P256": {
+          "implementation": "Abstract verification service",
+          "equivalence": "assumed",
+          "limitation": "Analyst-selected 1 ms constant, not measured; use only for receiver-capacity sensitivity.",
+          "source_urls": [],
+          "operations": {
+            "verify": {
+              "samples_ms": [
+                1.0
+              ],
+              "sample_kind": "assumed_constant"
+            }
+          }
+        },
+        "ML-DSA-44": {
+          "implementation": "Abstract verification service",
+          "equivalence": "assumed",
+          "limitation": "Analyst-selected 1 ms constant, not measured; use only for receiver-capacity sensitivity.",
+          "source_urls": [],
+          "operations": {
+            "verify": {
+              "samples_ms": [
+                1.0
+              ],
+              "sample_kind": "assumed_constant"
+            }
+          }
+        },
+        "FN-DSA-512": {
+          "implementation": "Abstract verification service",
+          "equivalence": "assumed",
+          "limitation": "Analyst-selected 1 ms constant, not measured; use only for receiver-capacity sensitivity.",
+          "source_urls": [],
+          "operations": {
+            "verify": {
+              "samples_ms": [
+                1.0
+              ],
+              "sample_kind": "assumed_constant"
+            }
+          }
+        },
+        "SLH-DSA-SHA2-128s": {
+          "implementation": "Abstract verification service",
+          "equivalence": "assumed",
+          "limitation": "Analyst-selected 1 ms constant, not measured; use only for receiver-capacity sensitivity.",
+          "source_urls": [],
+          "operations": {
+            "verify": {
+              "samples_ms": [
+                1.0
+              ],
+              "sample_kind": "assumed_constant"
+            }
+          }
+        }
+      }
+    }
+  }
+}
