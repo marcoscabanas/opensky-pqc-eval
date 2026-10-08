@@ -21,7 +21,7 @@ sudo apt-get update
 sudo apt-get install build-essential git cmake libssl-dev python3 python3-venv
 ```
 
-Use Python 3.11 or newer; the recorded development environment used 3.13.3.
+Use Python 3.13 for the pinned environment; the recorded development environment used 3.13.3. The package minimum of 3.11 does not apply to every pinned dependency.
 Other Linux distributions need equivalent C compiler, Make, Git, CMake, OpenSSL
 development headers, Python, and venv packages. These prerequisites follow the
 [native library build instructions](https://github.com/open-quantum-safe/liboqs/blob/0.16.0/README.md).
@@ -50,12 +50,12 @@ and `build-CMakeCache.txt` record a new build's source and configuration. Matchi
 source versions does not promise identical timings across CPUs, compilers, or
 OpenSSL versions.
 
-Install the pinned Python cryptography dependencies in a virtual environment:
+Install the pinned Python cryptography dependencies in a virtual environment. If you already created and activated `.venv` from the main README, skip the first two lines:
 
 ```bash
-python3 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements/crypto.txt
+python -m pip install -r config/requirements/crypto.txt
 ```
 
 Set the platform's library lookup path in every experiment shell, before starting

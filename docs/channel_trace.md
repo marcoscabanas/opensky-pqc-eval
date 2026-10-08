@@ -42,14 +42,14 @@ Complete [native cryptography setup](native_crypto.md), then prepare each target
 
 ```bash
 python -m src.experiment.signed_experiment \
-  --trace runs/full/window_a/processed/experimental_trace.jsonl \
+  --trace results/runs/full/window_a/processed/experimental_trace.jsonl \
   --channel-trace data/full/window_a/raw/channel_trace.jsonl \
   --algorithms-config config/algorithms.json \
   --hardware-profiles config/hardware_profiles.json \
   --scenarios config/signed_replay_scenarios.json \
   --replay-model signed_detached \
-  --output-dir runs/full/window_a/replay \
-  --workloads-dir runs/full/window_a/signed_workloads \
+  --output-dir results/runs/full/window_a/replay \
+  --workloads-dir results/runs/full/window_a/signed_workloads \
   --intervals 1 5 10 20
 ```
 

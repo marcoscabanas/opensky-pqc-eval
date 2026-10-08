@@ -2,10 +2,10 @@
   "dataset_name": "full_window_a",
   "raw_capture": "data/full/window_a/raw/adsb_capture.jsonl",
   "channel_trace": "data/full/window_a/raw/channel_trace.jsonl",
-  "processed_trace": "runs/full/window_a/processed/experimental_trace.jsonl",
-  "authentication_groups_dir": "runs/full/window_a/processed/authentication_groups",
-  "analysis_results_dir": "runs/full/window_a/analysis",
-  "signature_results_dir": "runs/full/window_a/signatures",
+  "processed_trace": "results/runs/full/window_a/processed/experimental_trace.jsonl",
+  "authentication_groups_dir": "results/runs/full/window_a/processed/authentication_groups",
+  "analysis_results_dir": "results/runs/full/window_a/analysis",
+  "signature_results_dir": "results/runs/full/window_a/signatures",
   "execution_stages": [
     "capture",
     "aircraft",
@@ -16,8 +16,8 @@
   "hardware_profiles": "config/hardware_profiles.json",
   "replay_engine": "signed_detached",
   "replay_scenarios": "config/signed_replay_scenarios.json",
-  "signed_workloads_dir": "runs/full/window_a/signed_workloads",
-  "replay_results_dir": "runs/full/window_a/replay",
+  "signed_workloads_dir": "results/runs/full/window_a/signed_workloads",
+  "replay_results_dir": "results/runs/full/window_a/replay",
   "signature_size_sources": [],
   "authentication_intervals": [
     1,
@@ -25,5 +25,6 @@
     10,
     20
   ],
-  "algorithms_config": "config/algorithms.json"
+  "algorithms_config": "config/algorithms.json",
+  "run_directory": "results/runs/full/window_a"
 }

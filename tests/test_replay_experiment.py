@@ -392,11 +392,11 @@ class ScientificSourceEvidenceTest(unittest.TestCase):
             config = json.loads((root / "config" / f"{dataset}.json").read_text())
             self.assertEqual(config["signature_size_sources"], [])
             if dataset == "development":
-                self.assertEqual(config["replay_results_dir"], "runs/development/replay")
+                self.assertEqual(config["replay_results_dir"], "results/runs/development/replay")
                 self.assertEqual(config["replay_scenarios"], "config/delayed_replay_scenarios.json")
                 self.assertEqual(config["signature_size_profile"], "data/calibration/signature_sizes.json")
             else:
-                self.assertEqual(config["replay_results_dir"], "runs/full/window_a/replay")
+                self.assertEqual(config["replay_results_dir"], "results/runs/full/window_a/replay")
                 self.assertEqual(config["replay_scenarios"], "config/signed_replay_scenarios.json")
                 self.assertEqual(config["replay_engine"], "signed_detached")
                 self.assertNotIn("signature_size_profile", config)

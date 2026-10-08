@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -48,6 +49,7 @@ def resolve_cfg_paths(config: dict) -> dict:
         "signature_size_profile",
         "channel_trace",
         "signed_workloads_dir",
+        "run_directory",
     ):
         if key in resolved and isinstance(resolved[key], str):
             resolved[key] = str(repo_path(resolved[key]))
@@ -104,6 +106,61 @@ def load_config(path: str | Path) -> dict:
     resolved = resolve_cfg_paths(config)
     resolved["config_path"] = str(config_path)
     return resolved
+
+
+def pipeline_lock_path(config: dict) -> Path:
+    """Isolate new runs while preserving the lock used by legacy recovery jobs.
+
+    All generated paths in an opted-in configuration must belong to its run.
+    Restricting these runs to results/runs also keeps them disjoint from legacy
+    outputs protected by the historical repository-wide lock.
+    """
+    if "run_directory" not in config:
+        return REPO_ROOT / "results" / ".pipeline.lock"
+    value = config["run_directory"]
+    if not isinstance(value, str) or not value:
+        raise ValueError("run_directory must be a nonempty path string.")
+    root = repo_path(value).resolve()
+    runs = (REPO_ROOT / "results" / "runs").resolve()
+    if root == runs or not root.is_relative_to(runs):
+        raise ValueError("run_directory must be a dedicated subdirectory of results/runs.")
+    for key in ("processed_trace", "authentication_groups_dir", "analysis_results_dir",
+                "signature_results_dir", "signed_workloads_dir", "replay_results_dir"):
+        if key in config:
+            path = repo_path(config[key]).resolve()
+            if path == root or not path.is_relative_to(root):
+                raise ValueError(f"{key} must be inside run_directory: {root}")
+    return root / ".pipeline.lock"
+
+
+def validate_preprocessing_provenance(config: dict) -> None:
+    """Bind modern replay inputs to the raw capture through its saved manifest.
+
+    Stored paths describe the producing checkout; current configured paths and
+    content hashes determine whether identical artifacts can be reused locally.
+    Legacy recovery configurations retain their original behavior.
+    """
+    if "run_directory" not in config:
+        return
+    try:
+        manifest_path = repo_path(config["analysis_results_dir"]) / "preprocessing_manifest.json"
+        with manifest_path.open(encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        if not isinstance(manifest, dict):
+            raise ValueError("Preprocessing manifest must be an object.")
+        for config_key, digest_key in (("raw_capture", "input_sha256"), ("processed_trace", "output_sha256")):
+            path = repo_path(config[config_key])
+            checksum = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    checksum.update(chunk)
+            if manifest.get(digest_key) != checksum.hexdigest():
+                raise ValueError(f"{config_key} bytes do not match the preprocessing manifest: {path}")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(
+            f"Raw-to-trace provenance validation failed: {exc}. "
+            "Preserve existing results and use a fresh run directory to preprocess the intended capture."
+        ) from exc
 
 
 def script_path(*parts: str) -> Path:
@@ -285,6 +342,7 @@ def run_preprocess(config: dict, force: bool) -> None:
     output_trace = repo_path(config["processed_trace"])
     output_manifest = stage_outputs(stage, config)[1]
     if not force and output_trace.exists() and output_manifest.exists():
+        validate_preprocessing_provenance(config)
         print(f"SKIP: {stage} -> {output_trace} and {output_manifest} already exist (use --force to regenerate).")
         return
     if not force and (output_trace.exists() or output_manifest.exists()):
@@ -391,6 +449,7 @@ def run_feasibility(config: dict, force: bool) -> None:
 
 def run_replay_experiment(config: dict, force: bool, mode: str) -> None:
     """Dispatch screening/replay with output-integrity validation on every run."""
+    validate_preprocessing_provenance(config)
     extra = []
     if mode == "replay" and config.get("replay_engine") in {"signed_before_send", "signed_detached"}:
         if not config.get("channel_trace"):
@@ -499,7 +558,7 @@ def main() -> None:
 
     output_dir = repo_path(config["signature_results_dir"])
     status_path = output_dir / "pipeline_status.json"
-    with RunLock(REPO_ROOT / "results" / ".pipeline.lock"):
+    with RunLock(pipeline_lock_path(config)):
         status = {"pid": os.getpid(), "config": config["config_path"], "stages": selected,
                   "started_at": datetime.now(timezone.utc).isoformat(), "state": "running"}
         try:

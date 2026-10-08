@@ -15,10 +15,10 @@ class ReproductionCheckTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.results, self.reference = self.root / "runs/development/replay", self.root / "reference/development"
+        self.results, self.reference = self.root / "results/runs/development/replay", self.root / "results/reference/development"
         self.raw = self.write("data/development/raw/adsb_sample.jsonl", b'{"fixture":true}\n')
-        self.trace = self.write("runs/development/processed/experimental_trace.jsonl", b'{"trace_id":1}\n{"trace_id":2}\n')
-        self.groups = self.write("runs/development/processed/authentication_groups/authentication_groups_k1.jsonl", b'{"group_id":1}\n{"group_id":2}\n')
+        self.trace = self.write("results/runs/development/processed/experimental_trace.jsonl", b'{"trace_id":1}\n{"trace_id":2}\n')
+        self.groups = self.write("results/runs/development/processed/authentication_groups/authentication_groups_k1.jsonl", b'{"group_id":1}\n{"group_id":2}\n')
         self.source = self.write("src/model.py", b"# fixture source\n")
         self.config = {"fixed": {"module": "src.fixed", "implementation": "fixture", "expected_signature_bytes": 64}}
         self.config_path = self.write_json("config/algorithms.json", self.config)

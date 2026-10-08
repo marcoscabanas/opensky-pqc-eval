@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import sys
@@ -41,6 +42,45 @@ class StageOutputsTest(unittest.TestCase):
 
 
 class ExecutionStagesTest(unittest.TestCase):
+    def test_modern_runs_are_isolated_from_active_legacy_recovery(self):
+        legacy = pipeline.load_config("config/development_recovery.json")
+        self.assertEqual(pipeline.pipeline_lock_path(legacy),
+                         pipeline.REPO_ROOT / "results/.pipeline.lock")
+        locks = []
+        for name in ("development", "full_window_a", "full_window_b"):
+            config = pipeline.load_config(f"config/{name}.json")
+            lock = pipeline.pipeline_lock_path(config)
+            self.assertTrue(lock.is_relative_to(pipeline.REPO_ROOT / "results/runs"))
+            locks.append(lock)
+        self.assertEqual(len(locks), len(set(locks)))
+        self.assertEqual(pipeline.pipeline_lock_path(pipeline.load_config("config/full.json")), locks[1])
+
+    def test_run_scope_rejects_outputs_outside_its_lock(self):
+        config = pipeline.load_config("config/full_window_a.json")
+        config["signed_workloads_dir"] = str(pipeline.REPO_ROOT / "results/development/recovery")
+        with self.assertRaisesRegex(ValueError, "signed_workloads_dir"):
+            pipeline.pipeline_lock_path(config)
+        for path in ("results", "results/runs", "data/development", "results/runs/../development"):
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, "dedicated subdirectory"):
+                pipeline.pipeline_lock_path({"run_directory": path})
+
+    def test_absolute_paths_and_symlinks_cannot_escape_run_scope(self):
+        root = pipeline.REPO_ROOT / "results/runs/demo"
+        with self.assertRaisesRegex(ValueError, "dedicated subdirectory"):
+            pipeline.pipeline_lock_path({"run_directory": str(root / "../../development/recovery")})
+        with self.assertRaisesRegex(ValueError, "signature_results_dir"):
+            pipeline.pipeline_lock_path({"run_directory": str(root),
+                                         "signature_results_dir": str(root / "../other/signatures")})
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            runs = repository / "results/runs"
+            runs.mkdir(parents=True)
+            external = repository / "legacy"
+            external.mkdir()
+            (runs / "alias").symlink_to(external, target_is_directory=True)
+            with patch.object(pipeline, "REPO_ROOT", repository), self.assertRaisesRegex(ValueError, "dedicated subdirectory"):
+                pipeline.pipeline_lock_path({"run_directory": str(runs / "alias")})
+
     def test_legacy_and_recovery_configs_preserve_existing_execution_order(self):
         expected = ["capture", "aircraft", "duplicates", "preprocess", "groups", "signatures", "feasibility"]
         for config in ({}, pipeline.load_config("config/development_recovery.json")):
@@ -84,8 +124,10 @@ class ExecutionStagesTest(unittest.TestCase):
         for model in ("signed_detached", "signed_before_send"):
             config = pipeline.load_config("config/full.json")
             config["replay_engine"] = model
-            with self.subTest(model=model), patch.object(pipeline, "run_script") as run:
+            with self.subTest(model=model), patch.object(pipeline, "run_script") as run, \
+                    patch.object(pipeline, "validate_preprocessing_provenance") as validate:
                 pipeline.run_replay_experiment(config, force=False, mode="replay")
+            validate.assert_called_once_with(config)
             args = run.call_args.args
             self.assertEqual(args[0], "src.experiment.signed_experiment")
             self.assertEqual(args[args.index("--replay-model") + 1], model)
@@ -113,6 +155,89 @@ class ExecutionStagesTest(unittest.TestCase):
         self.assertNotIn("signature_size_profile", full)
         with self.assertRaises(ValueError):
             pipeline.resolve_cfg_paths({"signature_size_sources": "not-a-list"})
+
+
+class PreprocessingProvenanceTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.raw = self.root / "raw.jsonl"
+        self.trace = self.root / "trace.jsonl"
+        self.raw.write_text('{"df":17,"fixture":"raw"}\n')
+        self.trace.write_text('{"trace_id":1,"fixture":"processed"}\n')
+        self.manifest_path = self.root / "preprocessing_manifest.json"
+        self.manifest = {
+            "input_file": "/previous/checkout/raw.jsonl", "output_file": "/previous/checkout/trace.jsonl",
+            "input_sha256": hashlib.sha256(self.raw.read_bytes()).hexdigest(),
+            "output_sha256": hashlib.sha256(self.trace.read_bytes()).hexdigest(),
+        }
+        self.manifest_path.write_text(json.dumps(self.manifest))
+        self.config = pipeline.load_config("config/demo.json")
+        self.config.update(run_directory=str(self.root), raw_capture=str(self.raw),
+                           processed_trace=str(self.trace), analysis_results_dir=str(self.root))
+
+    def test_relocated_identical_artifacts_are_validated_without_rewriting(self):
+        paths = (self.raw, self.trace, self.manifest_path)
+        before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in paths}
+        pipeline.validate_preprocessing_provenance(self.config)
+        with patch.object(pipeline, "run_script") as run:
+            pipeline.run_preprocess(self.config, False)
+        run.assert_not_called()
+        self.assertEqual(before, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in paths})
+
+    def test_changed_raw_capture_rejects_preprocessing_reuse(self):
+        self.raw.write_text("changed raw capture\n")
+        before = self.trace.read_bytes(), self.manifest_path.read_bytes()
+        with patch.object(pipeline, "run_script") as run:
+            with self.assertRaisesRegex(ValueError, "raw_capture bytes.*manifest"):
+                pipeline.run_preprocess(self.config, False)
+        run.assert_not_called()
+        self.assertEqual(before, (self.trace.read_bytes(), self.manifest_path.read_bytes()))
+
+    def test_changed_processed_trace_is_rejected(self):
+        self.trace.write_text("changed processed trace\n")
+        with self.assertRaisesRegex(ValueError, "processed_trace bytes.*manifest"):
+            pipeline.validate_preprocessing_provenance(self.config)
+
+    def test_missing_or_changed_manifest_fails_without_repair(self):
+        for content in (None, "not JSON", "[]", "{}", json.dumps({**self.manifest, "input_sha256": "0" * 64})):
+            with self.subTest(content=content):
+                if content is None:
+                    self.manifest_path.unlink()
+                else:
+                    self.manifest_path.write_text(content)
+                with self.assertRaisesRegex(ValueError, "Raw-to-trace provenance.*fresh run directory"):
+                    pipeline.validate_preprocessing_provenance(self.config)
+
+    def test_replay_screening_and_validate_only_require_raw_to_trace_integrity(self):
+        for mode in ("replay", "screening"):
+            for validate_only in (False, True):
+                for force in (False, True):
+                    with self.subTest(mode=mode, validate_only=validate_only, force=force):
+                        self.config["validate_only"] = validate_only
+                        self.raw.write_text("changed capture\n")
+                        with patch.object(pipeline, "run_script") as run:
+                            with self.assertRaisesRegex(ValueError, "raw_capture bytes"):
+                                pipeline.run_replay_experiment(self.config, force, mode)
+                        run.assert_not_called()
+
+    def test_valid_provenance_allows_native_validation_dispatch(self):
+        self.config["validate_only"] = True
+        with patch.object(pipeline, "run_script") as run:
+            pipeline.run_replay_experiment(self.config, False, "replay")
+        run.assert_called_once()
+        self.assertIn("--validate-only", run.call_args.args)
+        self.assertEqual(run.call_args.args[0], "src.experiment.signed_experiment")
+
+    def test_legacy_configuration_keeps_original_behavior(self):
+        legacy = {key: value for key, value in self.config.items() if key != "run_directory"}
+        self.raw.unlink()
+        self.manifest_path.write_text("legacy manifest fixture\n")
+        pipeline.validate_preprocessing_provenance(legacy)
+        with patch.object(pipeline, "run_script") as run:
+            pipeline.run_preprocess(legacy, False)
+        run.assert_not_called()
 
 
 class PipelineIntegrationTest(unittest.TestCase):
@@ -180,8 +305,10 @@ class PipelineIntegrationTest(unittest.TestCase):
     def test_imported_size_profile_dispatch_needs_no_original_signature_directory(self):
         config = pipeline.load_config("config/development.json")
         config["validate_only"] = True
-        with patch.object(pipeline, "run_script") as run_script:
+        with patch.object(pipeline, "run_script") as run_script, \
+                patch.object(pipeline, "validate_preprocessing_provenance") as validate:
             pipeline.run_replay_experiment(config, False, "screening")
+        validate.assert_called_once_with(config)
         args = run_script.call_args.args
         self.assertEqual(args[0], "src.experiment.replay_experiment")
         self.assertNotIn("--signatures-dir", args)
@@ -193,8 +320,10 @@ class PipelineIntegrationTest(unittest.TestCase):
         config = pipeline.load_config("config/full.json")
         self.assertTrue(config["channel_trace"].endswith("data/full/window_a/raw/channel_trace.jsonl"))
         for mode in ("screening", "replay"):
-            with patch.object(pipeline, "run_script") as run_script:
+            with patch.object(pipeline, "run_script") as run_script, \
+                    patch.object(pipeline, "validate_preprocessing_provenance") as validate:
                 pipeline.run_replay_experiment(config, False, mode)
+            validate.assert_called_once_with(config)
             args = run_script.call_args.args
             if mode == "replay":
                 self.assertEqual(args[0], "src.experiment.signed_experiment")

@@ -2,8 +2,8 @@
 
 This directory contains the completed delayed-authentication sample experiment:
 64 replay cases, 16 analytical screening rows, the exported calibration, figures,
-and the producing Python environment. Follow [the main README](../../README.md)
-to regenerate outputs under `runs/` and compare them here.
+and the producing Python environment. Follow [the main README](../../../README.md)
+to regenerate outputs under `results/runs/` and compare them here.
 
 The reports and CSVs were copied verbatim from the validated run, preserving
 integrity digests. Absolute paths inside them are provenance labels from the
@@ -27,5 +27,5 @@ to run the replay-only subset on Linux; its remote execution has not been observ
 The one seed and development capture validate implementation and reproduction;
 they do not provide confidence intervals, a final one-hour dataset, calibrated
 RF loss, aircraft measurements, or a deployed protocol allocation. Read
-[the results guide](../../docs/development_results.md) and
-[methodology](../../docs/methodology.md) alongside the numbers.
+[the results guide](../../../docs/development_results.md) and
+[methodology](../../../docs/methodology.md) alongside the numbers.

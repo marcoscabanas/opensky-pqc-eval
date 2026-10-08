@@ -1,10 +1,10 @@
 {
   "dataset_name": "development",
   "raw_capture": "data/development/raw/adsb_sample.jsonl",
-  "processed_trace": "runs/development/processed/experimental_trace.jsonl",
-  "authentication_groups_dir": "runs/development/processed/authentication_groups",
-  "analysis_results_dir": "runs/development/analysis",
-  "signature_results_dir": "runs/development/signatures",
+  "processed_trace": "results/runs/development/processed/experimental_trace.jsonl",
+  "authentication_groups_dir": "results/runs/development/processed/authentication_groups",
+  "analysis_results_dir": "results/runs/development/analysis",
+  "signature_results_dir": "results/runs/development/signatures",
   "execution_stages": [
     "capture",
     "aircraft",
@@ -16,7 +16,7 @@
   ],
   "hardware_profiles": "config/hardware_profiles.json",
   "replay_scenarios": "config/delayed_replay_scenarios.json",
-  "replay_results_dir": "runs/development/replay",
+  "replay_results_dir": "results/runs/development/replay",
   "signature_size_sources": [],
   "authentication_intervals": [
     1,
@@ -25,5 +25,6 @@
     20
   ],
   "algorithms_config": "config/algorithms.json",
-  "signature_size_profile": "data/calibration/signature_sizes.json"
+  "signature_size_profile": "data/calibration/signature_sizes.json",
+  "run_directory": "results/runs/development"
 }

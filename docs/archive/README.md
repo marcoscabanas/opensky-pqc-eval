@@ -6,4 +6,4 @@ These documents describe earlier stages of the project. Their commands, paths, a
 - [deadline_model_results.md](deadline_model_results.md): the earlier 48-case sample run.
 - [development_audit.md](development_audit.md): initial interrupted-signing audit and recovery notes.
 
-The active model has separate reception and authentication clocks, no authentication-age expiry, paired collision sensitivity, and 64 cases. Follow [the current README](../../README.md), [methodology](../methodology.md), and [results](../development_results.md).
+The current study uses real signatures with detached authentication and 96 cases per window. The 64-case calibrated-size model is a historical development reference. Follow [the current README](../../README.md), [methodology](../methodology.md), and [historical results](../development_results.md).

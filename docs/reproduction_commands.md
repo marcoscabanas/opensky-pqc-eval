@@ -1,98 +1,42 @@
-# Reproduction command walkthrough
+# Reproduce the current signed experiment
 
-Use the repository root and an activated environment with `requirements/replay.txt` installed, as in the [README](../README.md). Sections 1–5 reproduce the frozen development model through the individual stages dispatched by `python -m src.pipeline --config config/development.json`. They use no private key or native crypto library. The separate final-study command below **requires native cryptography** and real signatures.
+This guide covers the current `signed_detached` workflow: actual signatures, fragmented authentication transmissions, and recorded channel interference. Start with [the README](../README.md) for installation and the small demo. The [historical development reference](reproduce_development.md) uses different commands and assumptions.
 
-## 1. Analyze the raw capture
+**The final datasets are not available yet.** The executable workflow is ready for canonical inputs, but acquisition commands, source-specific conversion, and final reference results cannot be provided until the data are obtained. Do not substitute the short development sample or synthetic demo and label the result as the one-hour experiment.
 
-```bash
-python -m src.analysis.analyze_capture \
-  data/development/raw/adsb_sample.jsonl \
-  --output runs/development/analysis/capture_summary.json
-python -m src.analysis.analyze_aircraft \
-  data/development/raw/adsb_sample.jsonl \
-  --summary runs/development/analysis/aircraft_analysis.json
-python -m src.analysis.analyze_duplicates \
-  data/development/raw/adsb_sample.jsonl \
-  --summary runs/development/analysis/duplicate_analysis.json
-```
+## 1. Set up and verify the environment
 
-## 2. Build the canonical trace
+Use Python 3.13, the pinned root `requirements.txt`, and the pinned native library as described in [the README](../README.md) and [native_crypto.md](native_crypto.md). Run all commands below from the repository root in the same activated shell. Confirm setup before attempting the expensive full study:
 
 ```bash
-python -m src.processing.preprocess_capture \
-  data/development/raw/adsb_sample.jsonl \
-  --output runs/development/processed/experimental_trace.jsonl \
-  --manifest runs/development/analysis/preprocessing_manifest.json
+python -m pip check
+./scripts/bootstrap_liboqs.sh --check
+python -m tests.test_crypto
+python -m src.pipeline --config config/demo.json
+python -m src.pipeline --config config/demo.json --validate-only
+python scripts/check_demo.py
 ```
 
-Expect 133,565 observations, 417 aircraft, and output SHA-256 `783ec055bb2027bc3fed18d8d33d587d30fb865518bfe8781ecfc72d1cbeea41`.
+The demo uses 21 synthetic targets from one artificial aircraft and 621 seconds of declared synthetic channel coverage. The workload counts per algorithm are 21, 4, 2, and 1 signatures for `k=1,5,10,20`: 112 actual signatures across 16 workloads. Its two DF11-shaped capture records are excluded from authentication and are retained as channel interferers. A further recorded synthetic event exercises the follow-up. None of these are observed aircraft traffic.
 
-## 3. Build authentication groups
+## 2. Obtain and document the two recorded windows
 
-```bash
-python -m src.processing.build_authentication_groups \
-  runs/development/processed/experimental_trace.jsonl \
-  --output-dir runs/development/processed/authentication_groups \
-  --summary runs/development/analysis/authentication_group_summary.json \
-  --intervals 1 5 10 20
-```
+For each window, supply these two aligned files:
 
-The stored files include incomplete terminal groups; replay's fixed-count mode leaves their messages unsigned, while timeout groups are rebuilt during replay.
+| File | Required contents |
+| --- | --- |
+| `adsb_capture.jsonl` | The one-hour target cohort in the [raw message schema](../data/README.md#raw-jsonl-format). DF17 records are selected for authentication. |
+| `channel_trace.jsonl` | All recorded 1090 MHz events in the [channel schema](channel_trace.md#canonical-jsonl-format), including non-target traffic and follow-up. |
 
-## 4. Run screening and replay
+The target cohort ends after its selected hour. Channel recording must continue through **600 seconds after the final target, including completion of the last frame**. Follow-up traffic interferes but does not create new authentication groups. Missing follow-up is rejected rather than treated as silence.
 
-Absolute paths here match the pipeline's provenance representation. The same command with `--mode screening` runs only the 16 analytical rows; `--mode replay` runs only replay. `all` runs both.
+Document the observation dates, window boundaries, geographic/receiver coverage, timestamp semantics and precision, acquisition method, event durations, filtering, duplicate-emission handling, input hashes, and data access/redistribution terms. Prefer windows with different measured traffic conditions; they are two scenarios, not random repetitions.
 
-```bash
-python -m src.experiment.replay_experiment \
-  --trace "$PWD/runs/development/processed/experimental_trace.jsonl" \
-  --groups-dir "$PWD/runs/development/processed/authentication_groups" \
-  --algorithms-config "$PWD/config/algorithms.json" \
-  --size-profile "$PWD/data/calibration/signature_sizes.json" \
-  --hardware-profiles "$PWD/config/hardware_profiles.json" \
-  --scenarios "$PWD/config/delayed_replay_scenarios.json" \
-  --output-dir "$PWD/runs/development/replay" \
-  --intervals 1 5 10 20 --mode all
-```
+The channel file must link each preprocessed target `trace_id` to exactly one original channel event. Non-target events have no target link. Preprocessing sorts by timestamp and source line, so build these links against that canonical ordering. Repeated message bytes alone are not evidence of duplicate emissions. Use the actual source's emission identifiers or documented acquisition logic when combining receiver reports.
 
-Add `--validate-only` to that exact command to validate without recomputing. The output path is locked independently; it must not be shared with another writer. This command can read separate completed inputs while a legacy signing pipeline holds the global pipeline lock. It never reads active `.partial` files or signing checkpoints.
+**The acquisition adapter is still pending.** DF17 preprocessing does not recover excluded traffic or produce a complete channel file. A decoded-packet log cannot demonstrate complete physical RF capture; include undecodable activity only if its timing and duration were actually recorded. Record these limits alongside the data.
 
-The direct analysis/preprocessing commands write their destinations, so use fresh paths when preserving a previous experiment. Replay itself refuses stale or incomplete existing outputs unless `--force` is explicit. Do not use `--force` as a substitute for documenting changed assumptions.
-
-## 5. Compare and plot
-
-```bash
-python scripts/check_reproduction.py \
-  --results-dir runs/development/replay --reference-dir reference/development \
-  --allow-model-change
-python -m src.experiment.plot_delayed_replay \
-  --results-dir runs/development/replay \
-  --output-dir runs/development/figures --interval 5
-```
-
-## Select a small historical development case
-
-After preprocessing/grouping, this single ECDSA case is a quick replay check. It has a different case matrix and therefore should not be compared with the 64-case reference checker.
-
-```bash
-python -m src.experiment.replay_experiment \
-  --trace "$PWD/runs/development/processed/experimental_trace.jsonl" \
-  --groups-dir "$PWD/runs/development/processed/authentication_groups" \
-  --algorithms-config "$PWD/config/algorithms.json" \
-  --size-profile "$PWD/data/calibration/signature_sizes.json" \
-  --hardware-profiles "$PWD/config/hardware_profiles.json" \
-  --scenarios "$PWD/config/delayed_replay_scenarios.json" \
-  --output-dir "$PWD/runs/quick-check" --mode replay \
-  --scenario fixed_k_independent --algorithm ECDSA-P256 --intervals 5 --seeds 1
-```
-
-## Run the detached signed study with two recorded windows
-
-First complete [native cryptography setup](native_crypto.md). Provide two distinct one-hour target captures and their aligned [recorded channel inputs](channel_trace.md), each with 600 seconds of follow-up plus frame completion. The acquisition format is not yet known, so an appropriate channel-export adapter and its provenance remain prerequisites. Do not infer undecodable events from a decoded-only log.
-
-### 1. Install the prepared input files
-
-Replace the example source paths with the actual acquisition exports:
+Once the exports satisfy those schemas, replace the four example source paths below:
 
 ```bash
 mkdir -p data/full/window_a/raw data/full/window_b/raw
@@ -102,9 +46,42 @@ cp /path/to/window-b-targets.jsonl data/full/window_b/raw/adsb_capture.jsonl
 cp /path/to/window-b-channel.jsonl data/full/window_b/raw/channel_trace.jsonl
 ```
 
-The target files contain only the intended one-hour authentication cohorts. The channel files retain additional follow-up traffic as interference. Exact-count groups do not acquire new members from the follow-up. Each channel target link must match the deterministic trace IDs produced by preprocessing. Preserve repeated message contents; removing a network duplicate requires evidence of the same emission, not just identical bytes.
+These directories are ignored by Git. Preserve the source capture separately from any canonical export; record the conversion command and hashes in the release's acquisition documentation.
 
-### 2. Run the full pipelines
+## 3. Preprocess and inspect a small case first
+
+First create the capture summary required by preprocessing, then create the trace and its audit manifest. These steps do not sign messages:
+
+```bash
+python -m src.pipeline --config config/full_window_a.json --stage capture
+python -m src.pipeline --config config/full_window_a.json --stage preprocess
+python -m src.pipeline --config config/full_window_b.json --stage capture
+python -m src.pipeline --config config/full_window_b.json --stage preprocess
+```
+
+Inspect `results/runs/full/window_a/analysis/preprocessing_manifest.json` and the corresponding window B file before proceeding. Confirm the intended duration, filtering, counts, and source identity against the acquisition record.
+
+This initial window A case exercises channel validation, real signing, transport, and verification without running every algorithm and condition:
+
+```bash
+python -m src.experiment.signed_experiment \
+  --trace "$PWD/results/runs/full/window_a/processed/experimental_trace.jsonl" \
+  --channel-trace "$PWD/data/full/window_a/raw/channel_trace.jsonl" \
+  --algorithms-config "$PWD/config/algorithms.json" \
+  --hardware-profiles "$PWD/config/hardware_profiles.json" \
+  --scenarios "$PWD/config/signed_replay_scenarios.json" \
+  --replay-model signed_detached \
+  --output-dir "$PWD/results/runs/full/window_a/quick-check" \
+  --workloads-dir "$PWD/results/runs/full/window_a/signed_workloads" \
+  --algorithm ECDSA-P256 --intervals 5 \
+  --scenario detached_independent_r10
+```
+
+The quick check shares its completed workload with the later full run and uses a separate result directory. It is one case over the whole selected window, not a reduced-duration dataset. Add `--validate-only` to this exact command to audit it without replaying. The independent control ignores collisions; it alone cannot establish channel feasibility.
+
+Budget signing time, RAM, and storage before the next step. The current builder is serial. SLH-DSA can make full-data signing take days; completing the small demo is not a runtime estimate for the full study. The driver loads one algorithm/group-size workload at a time and may hold many signatures in memory. Its default event guard is 20 million events per case. Plan explicit resource changes rather than truncating observed traffic to bypass the guard.
+
+## 4. Run both windows
 
 ```bash
 python -m src.pipeline --config config/full_window_a.json
@@ -113,96 +90,100 @@ python -m src.pipeline --config config/full_window_b.json
 python -m src.pipeline --config config/full_window_b.json --validate-only
 ```
 
-Each pipeline performs capture/aircraft/duplicate analysis, preprocessing, and detached signed replay. `config/full.json` is the convenience window A configuration and writes the same destinations. The windows remain separate traffic scenarios, not statistical repetitions.
+Each pipeline analyzes the capture, preprocesses target messages, generates real signed objects, and runs replay. Completed matching outputs and workloads are validated and reused. `config/full.json` is a convenience alias for window A; it does not combine both windows or create another experiment.
 
-### 3. Alternatively, preprocess and replay explicitly
+The default matrix is:
 
-Use this route to inspect the trace and run a small case before the complete matrix, or to avoid the global pipeline lock held by a legacy job. The direct preprocess commands write their destinations, so preserve old inputs/results before rerunning with changes.
+| Variable | Values |
+| --- | --- |
+| Algorithms | ECDSA P-256, ML-DSA-44, Falcon-512, SLH-DSA-SHA2-128s |
+| Exact group size | 1, 5, 10, 20 messages per aircraft |
+| Authentication fragment pacing | 10, 50, 100 frames/s/aircraft |
+| Channel | Collision-free control; destructive temporal overlap |
+| Recorded windows | A and B, evaluated separately |
 
-```bash
-python -m src.processing.preprocess_capture \
-  data/full/window_a/raw/adsb_capture.jsonl \
-  --output runs/full/window_a/processed/experimental_trace.jsonl \
-  --manifest runs/full/window_a/analysis/preprocessing_manifest.json
-python -m src.processing.preprocess_capture \
-  data/full/window_b/raw/adsb_capture.jsonl \
-  --output runs/full/window_b/processed/experimental_trace.jsonl \
-  --manifest runs/full/window_b/analysis/preprocessing_manifest.json
-```
+That is **96 cases and 16 signed workloads per window; 192 cases and 32 workloads in total**. The same actual signatures are reused across the six pacing/channel cases. There is no one-second group timeout. Incomplete final groups remain unsigned, while their ordinary messages still transmit. No extra random loss, timing jitter, or synthetic background is added. The single interface seed is not a random replication or a cryptographic seed.
 
-Now generate real signed objects and replay window A:
+The sender and receiver each use their declared embedded reference processing profile, with one signing worker per aircraft and one receiver verification worker. These are reference scenarios, not measurements of a particular avionics computer or ground server. Actual host signing runtime is separate from the model's service time. See [hardware_profiles.md](hardware_profiles.md).
 
-```bash
-python -m src.experiment.signed_experiment \
-  --trace "$PWD/runs/full/window_a/processed/experimental_trace.jsonl" \
-  --channel-trace "$PWD/data/full/window_a/raw/channel_trace.jsonl" \
-  --algorithms-config "$PWD/config/algorithms.json" \
-  --hardware-profiles "$PWD/config/hardware_profiles.json" \
-  --scenarios "$PWD/config/signed_replay_scenarios.json" \
-  --replay-model signed_detached \
-  --output-dir "$PWD/runs/full/window_a/replay" \
-  --workloads-dir "$PWD/runs/full/window_a/signed_workloads" \
-  --intervals 1 5 10 20
-```
+## 5. Find and interpret the outputs
 
-Run the second window separately:
+| Output | Window A location |
+| --- | --- |
+| Capture and preprocessing diagnostics | `results/runs/full/window_a/analysis/` |
+| Canonical target trace | `results/runs/full/window_a/processed/experimental_trace.jsonl` |
+| Public signed-object cache | `results/runs/full/window_a/signed_workloads/` |
+| Full report and provenance | `results/runs/full/window_a/replay/replay_summary.json` |
+| Tabular case results | `results/runs/full/window_a/replay/replay_overview.csv` |
 
-```bash
-python -m src.experiment.signed_experiment \
-  --trace "$PWD/runs/full/window_b/processed/experimental_trace.jsonl" \
-  --channel-trace "$PWD/data/full/window_b/raw/channel_trace.jsonl" \
-  --algorithms-config "$PWD/config/algorithms.json" \
-  --hardware-profiles "$PWD/config/hardware_profiles.json" \
-  --scenarios "$PWD/config/signed_replay_scenarios.json" \
-  --replay-model signed_detached \
-  --output-dir "$PWD/runs/full/window_b/replay" \
-  --workloads-dir "$PWD/runs/full/window_b/signed_workloads" \
-  --intervals 1 5 10 20
-```
+Replace `window_a` with `window_b` for the second window. Keep the windows separate in analysis and plotting.
 
-Add `--validate-only` to either exact replay command to check a completed matching run without recomputing it. The direct route does not run the optional capture/aircraft/duplicate diagnostics; use the full pipeline for those summaries.
+Read ordinary reception and transmission delay first. Then inspect authentication coverage, completed delay, failures, and pending work together. The receiver's original message-reception timestamp does not move when verification finishes. A long authentication queue does not mean the ordinary message arrived that late. `null` completion delay means no successful completions, not zero delay.
 
-### 4. Select a small initial case if needed
+The collision model erases overlapping frames; it does not make aircraft wait for a clear frequency. Added ordinary waiting comes from the modeled aircraft radio being occupied. The timing-matched control isolates fragment interference from changes in ordinary transmission times. Offered airtime is additive traffic demand, not measured RF occupancy. See [methodology.md](methodology.md) for exact metric definitions and limits.
 
-After preprocessing, this uses its own output directory while sharing the completed workload cache with later cases:
+The 600-second follow-up is fixed before inspecting final results. It covers an isolated largest selected SLH-DSA object under the slowest fragment pacing, but does not guarantee that queues drain. Work still waiting at the cutoff is pending. Additional time horizons or receiver worker counts belong in separately labeled sensitivity runs with sufficient recorded channel coverage.
+
+## 6. Export the figures
 
 ```bash
-python -m src.experiment.signed_experiment \
-  --trace "$PWD/runs/full/window_a/processed/experimental_trace.jsonl" \
-  --channel-trace "$PWD/data/full/window_a/raw/channel_trace.jsonl" \
-  --algorithms-config "$PWD/config/algorithms.json" \
-  --hardware-profiles "$PWD/config/hardware_profiles.json" \
-  --scenarios "$PWD/config/signed_replay_scenarios.json" \
-  --replay-model signed_detached \
-  --output-dir "$PWD/runs/full/window_a/quick-check" \
-  --workloads-dir "$PWD/runs/full/window_a/signed_workloads" \
-  --algorithm ECDSA-P256 --intervals 5 \
-  --scenario detached_independent_r10
+python -m src.experiment.plot_signed_replay \
+  --results-dir results/runs/full/window_a/replay \
+  --output-dir results/runs/full/window_a/figures \
+  --label "Recorded window A"
+python -m src.experiment.plot_signed_replay \
+  --results-dir results/runs/full/window_b/replay \
+  --output-dir results/runs/full/window_b/figures \
+  --label "Recorded window B"
 ```
 
-The six main scenario names are `detached_independent_r10`, `detached_collision_r10`, `detached_independent_r50`, `detached_collision_r50`, `detached_independent_r100`, and `detached_collision_r100`. The independent cases are collision-free controls; the others discard temporal overlaps. No extra random erasure, jitter, or synthetic background is applied. The single technical seed value has no stochastic effect under these settings.
+Each command writes `ordinary_impact`, `authentication_outcomes`, and `completed_authentication_delay` in PDF, PNG, and SVG formats, plus `figure_manifest.json`. These are standard diagnostic figures for the current workflow. The final paper's figure/table mapping and any additional publication analyses must be recorded when the paper and real runs are finalized. Exported image bytes can differ across platforms even when underlying results agree.
 
-### Matrix, caching, and interpretation
+## 7. Reproduce a published cache exactly
 
-Each window yields **96 cases**: four algorithms × four exact group sizes × three rates × two channel settings. Sixteen distinct real signed workloads are reused per window, giving **192 cases and 32 workloads** over both windows. No timeout closes undersized groups. Ordinary messages transmit independently of group completion/signing; incomplete tails remain ordinary transmissions without authentication.
+A fresh run generates fresh keys and signatures. Cryptographic randomness, including variable Falcon signature lengths, can change signature bytes and simulation results. To reproduce a particular published run, obtain its **public signed-object cache**, identical inputs, declared source revision, and matching dependencies. No private key is needed to verify or replay an existing signed workload.
 
-Native signing can take many hours for large SLH-DSA workloads. An interrupted unfinished workload rebuilds from scratch; completed workloads are reusable. Preserve the completed cache for exact reproduction, because cryptographic key generation and randomized signing are not seeded by replay. Host wall time is separate from the embedded timing profile used inside the model. Changed inputs or settings require fresh result paths or an explicitly documented `--force` regeneration.
+On a fresh checkout with no run outputs, install the release's data at the paths above. Then copy the public workload directories before running the pipeline. These commands are a template for a future release; the final cache and download location do not exist yet:
 
-The fixed 600-second follow-up is predeclared, not tuned after reading final results, and may leave substantial signing/transmission/verification backlog. Pending work is distinct from failed reconstruction or verification. A single verification worker is the baseline. To study two or four workers, copy the scenario JSON, change `receiver_workers`, identify the new scenarios as sensitivity cases, and invoke the direct command with `--scenarios` pointing to that copy and a fresh `--output-dir`. The same workload cache may be reused. These cases are outside the main 192-case matrix.
+```bash
+mkdir -p results/runs/full/window_a results/runs/full/window_b
+cp -R /path/to/release/window_a/signed_workloads results/runs/full/window_a/
+cp -R /path/to/release/window_b/signed_workloads results/runs/full/window_b/
+python -m src.pipeline --config config/full_window_a.json
+python -m src.pipeline --config config/full_window_a.json --validate-only
+python -m src.pipeline --config config/full_window_b.json
+python -m src.pipeline --config config/full_window_b.json --validate-only
+python scripts/compare_signed_results.py \
+  --results-dir results/runs/full/window_a/replay \
+  --reference-dir /path/to/release/window_a/replay
+python scripts/compare_signed_results.py \
+  --results-dir results/runs/full/window_b/replay \
+  --reference-dir /path/to/release/window_b/replay
+```
 
-The development reference checker and plotting command above do not apply to these study results. Inspect the new JSON/CSV reports for ordinary reception, fragment reconstruction, original-message association, verification, and pending work separately. Final data acquisition, analysis, and publication plots remain outstanding.
+The modern pipeline checks the preprocessing manifest against the current raw-capture and processed-trace hashes, then verifies cached signatures against the exact source messages. The comparison checks report/CSV integrity, input/source/cache content identities, and scientific results while allowing filesystem locations to differ. Fresh independently generated workloads are not expected to pass an exact-cache comparison.
+
+Copy the signed workloads, **not the old replay reports into the new output directory**: reports include paths in their run fingerprint. Recompute local reports from the preserved workload, and compare those reports with the frozen release. Do not edit stored hashes to make a relocated report pass validation.
+
+## Changing scenarios or recovering an interrupted run
+
+Rerun the same command for the same configuration. Completed matching reports and workloads are reused; an interrupted **unfinished signed workload restarts from scratch**. This differs from the legacy signature generator's resumable checkpoints. Keep completed public caches if a long run is interrupted.
+
+To change scientific assumptions, copy the configuration/scenario file, give the scenario a distinct name, and use a fresh run directory for every output. A modern pipeline configuration's `run_directory` contains its declared outputs and lock. Preserve the original reports. For example, a receiver-capacity sensitivity can change `receiver_workers` to 2 or 4 in a copied scenario, while retaining the existing signed workload in a direct replay invocation. These cases are outside the default 192-case matrix.
+
+Changed raw captures, altered processed traces, missing preprocessing manifests, and stale or incomplete reports are rejected. Use a fresh run directory when replacing input data. `--force` deliberately regenerates outputs; use it only after deciding to replace that run and preserving any evidence needed. Never run concurrent writers against the same outputs or signed-workload directory, or remove a live lock.
 
 ## Troubleshooting
 
-| Symptom | Resolution |
+| Symptom | What to check |
 | --- | --- |
-| `ModuleNotFoundError: src` | Change to the repository root and use `python -m ...`; do not run files inside `src/` directly. |
-| Missing NumPy/Matplotlib | Activate the intended environment and install `requirements/replay.txt`. |
-| `oqs` is missing or a native library cannot load | Complete [native setup](native_crypto.md) for the signed experiment or crypto tests. Only the frozen development replay can run without it. |
-| Global pipeline lock is held | Wait for the active pipeline, or use the independent module commands with separate destinations. Do not delete a live lock. |
-| Stale/altered report | Inputs, source, paths, scenarios, or outputs differ. Preserve the old run and use fresh output paths; regenerate deliberately if appropriate. |
-| `max_events` exceeded | No partial replay summary is published. Budget RAM and explicitly adjust a copied scenario, or select fewer/smaller cases. |
-| No authenticated messages | Read failures and pending counts; `null` authentication delay is not a crash or zero delay. |
-| Reference comparison mismatch | Confirm the exact sample, calibration, scenario matrix, source revision, and pinned environment. A copied report with rewritten path strings will fail its integrity digest. |
-
-A source-code revision or relocated checkout intentionally invalidates a cached report fingerprint. Recompute locally and compare scientific values; do not edit a report's hashes to make it pass.
+| `ModuleNotFoundError: src` | Enter the repository root and use `python -m ...`. |
+| Missing Python dependency | Activate `.venv` and install root `requirements.txt`. |
+| Native library or `oqs` cannot load | Follow [native setup](native_crypto.md), including shell exports and the loaded-path check. |
+| Missing full-study files | Complete acquisition and channel conversion; the final datasets are not bundled yet. |
+| Invalid target links or insufficient channel coverage | Check the canonical target IDs, timestamps, 120-microsecond target durations, and recorded follow-up. |
+| Active lock | Wait for that run; use separate output and workload directories for independent work. |
+| Stale or altered report | Inputs, source, configuration, paths, or files changed. Preserve it and use a fresh output location. |
+| Event limit exceeded | Budget RAM and set an explicit larger limit in a copied scenario; do not silently drop traffic. |
+| No completed authentications | Inspect failures, missing originals/fragments, and processing/transmission backlog. |
+| Published-result comparison fails | Confirm identical data, public cache, source revision, dependencies, and scenarios. |

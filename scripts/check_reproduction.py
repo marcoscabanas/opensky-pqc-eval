@@ -2,7 +2,7 @@
 """Check packaged inputs and reproduced scientific results using only stdlib.
 
 Run with --inputs-only before installing scientific/native dependencies. The
-default full check compares runs/development/replay with reference/development.
+default full check compares results/runs/development/replay with results/reference/development.
 Absolute checkout paths do not participate in the scientific comparison.
 """
 
@@ -364,8 +364,8 @@ def check_results(results_dir, reference_dir, manifest, root=REPOSITORY_ROOT, *,
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inputs-only", action="store_true", help="Check raw capture and portable calibration without generated outputs.")
-    parser.add_argument("--results-dir", type=Path, default=REPOSITORY_ROOT / "runs/development/replay")
-    parser.add_argument("--reference-dir", type=Path, default=REPOSITORY_ROOT / "reference/development")
+    parser.add_argument("--results-dir", type=Path, default=REPOSITORY_ROOT / "results/runs/development/replay")
+    parser.add_argument("--reference-dir", type=Path, default=REPOSITORY_ROOT / "results/reference/development")
     parser.add_argument("--allow-model-change", action="store_true",
                         help="Allow source hashes to differ from the frozen reference; still require current live source hashes and all scientific values to match.")
     args = parser.parse_args(argv)

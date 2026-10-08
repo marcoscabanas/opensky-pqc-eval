@@ -1,3 +1,3 @@
 # Complete tested Python environment. Native liboqs is installed separately.
--r requirements/replay.txt
--r requirements/crypto.txt
+-r config/requirements/replay.txt
+-r config/requirements/crypto.txt

@@ -21,7 +21,11 @@ results/**/archive/
 results/development/recovery/
 
 # Optional generated data
-# All new experiments write here. Frozen reference results live in reference/.
+# All new experiments write here; published reference artifacts stay versioned.
+results/runs/
+# Local pre-cleanup experiments and environments are preserved, not published.
+results/archive/
+# Compatibility for checkouts of earlier revisions.
 runs/
 # Earlier replay artifacts remain local; the current reference is published separately.
 results/development/replay/

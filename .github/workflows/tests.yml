@@ -1,4 +1,4 @@
-name: Replay tests
+name: Reproduction checks
 
 on:
   push:
@@ -16,10 +16,11 @@ jobs:
         with:
           python-version: '3.13'
           cache: pip
-          cache-dependency-path: requirements/replay.txt
-      - run: python -m pip install -r requirements/replay.txt
+          cache-dependency-path: config/requirements/replay.txt
+      - run: python -m pip install -r config/requirements/replay.txt
       - run: python -m pip check
       - run: python scripts/check_reproduction.py --inputs-only
+      - run: python scripts/check_demo.py --inputs-only
       - name: Run tests that do not need native cryptography
         run: >-
           python -m unittest
@@ -28,4 +29,81 @@ jobs:
           tests.test_constraint_screening tests.test_hardware_profiles
           tests.test_replay_experiment tests.test_pipeline
           tests.test_signed_workload tests.test_signed_replay tests.test_signed_experiment
-          tests.test_reproduction_check -v
+          tests.test_reproduction_check tests.test_signed_comparison tests.test_demo -v
+
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      OQS_INSTALL_PATH: ${{ github.workspace }}/.deps/liboqs
+      LD_LIBRARY_PATH: ${{ github.workspace }}/.deps/liboqs/lib
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            config/requirements/replay.txt
+            config/requirements/crypto.txt
+      - name: Install native build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git cmake libssl-dev
+      - name: Build and check pinned project-local liboqs
+        run: |
+          ./scripts/bootstrap_liboqs.sh
+          ./scripts/bootstrap_liboqs.sh --check
+      - name: Install the complete pinned Python environment
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip check
+      - name: Require native crypto and verify the loaded library
+        run: |
+          python - <<'PY'
+          import ctypes
+          import ctypes.util
+          import os
+          from pathlib import Path
+          import cryptography
+          import oqs
+
+          expected = (Path(os.environ["OQS_INSTALL_PATH"]) / "lib/liboqs.so").resolve()
+          class DlInfo(ctypes.Structure):
+              _fields_ = [("dli_fname", ctypes.c_char_p), ("dli_fbase", ctypes.c_void_p),
+                          ("dli_sname", ctypes.c_char_p), ("dli_saddr", ctypes.c_void_p)]
+          loader = ctypes.CDLL(ctypes.util.find_library("dl") or None)
+          loader.dladdr.argtypes = [ctypes.c_void_p, ctypes.POINTER(DlInfo)]
+          loader.dladdr.restype = ctypes.c_int
+          info = DlInfo()
+          assert loader.dladdr(ctypes.cast(oqs.oqs.native().OQS_version, ctypes.c_void_p),
+                               ctypes.byref(info)), "Cannot identify native library"
+          loaded = Path(os.fsdecode(info.dli_fname)).resolve()
+          assert loaded == expected, f"Unexpected library: {loaded}"
+          assert oqs.oqs_version() == "0.16.0"
+          assert oqs.oqs_python_version() == "0.16.0.1"
+          required = {"ML-DSA-44", "Falcon-512", "SLH_DSA_PURE_SHA2_128S"}
+          assert required.issubset(oqs.get_enabled_sig_mechanisms())
+          print("Native cryptography ready:", loaded, cryptography.__version__)
+          PY
+          python -m tests.test_crypto
+      - name: Run the complete test suite with native crypto installed
+        run: python -m unittest discover -s tests -v
+      - name: Run and cryptographically validate the 96-case detached demonstration
+        run: |
+          python -m src.pipeline --config config/demo.json
+          python -m src.pipeline --config config/demo.json --validate-only
+          python scripts/check_demo.py
+      - name: Export demonstration figures
+        run: >-
+          python -m src.experiment.plot_signed_replay
+          --results-dir results/runs/demo/replay
+          --output-dir results/runs/demo/figures
+          --label 'Synthetic implementation demo'
+      - name: Preserve demonstration outputs and public signed workloads
+        uses: actions/upload-artifact@v4
+        with:
+          name: detached-demo-linux
+          path: results/runs/demo/
+          if-no-files-found: error

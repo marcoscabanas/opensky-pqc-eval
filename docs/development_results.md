@@ -1,6 +1,6 @@
 # Development results: reception first, authentication later
 
-The corrected development experiment completed **64 replay cases and 16 screening rows**, then ran again from the raw capture in a fresh environment containing only the pinned replay/plotting dependencies. All scientific rows matched the first run within the comparison tolerances. Source/input/report/CSV hashes and outcome conservation passed. The complete suite has **156 passing tests**; the documented replay-only subset has **77**. See the [reference reports](../reference/development/README.md) and [recorded environment](../reference/development/environment.json).
+The corrected development experiment completed **64 replay cases and 16 screening rows**, then ran again from the raw capture in a fresh environment containing only the pinned replay/plotting dependencies. All scientific rows matched the first run within the comparison tolerances. Source/input/report/CSV hashes and outcome conservation passed. The reference environment records the test counts at the time of that historical run; current test commands are in the main README. See the [reference reports](../results/reference/development/README.md) and [recorded environment](../results/reference/development/environment.json).
 
 These are results for 133,565 observed DF17 messages over 640.792 seconds, followed by a 60-second drain period. They use one seed, hypothetical fragment/radio/loss settings, and composite published embedded timing references. They are not the final one-hour study or measured aircraft performance.
 
@@ -48,10 +48,10 @@ For Falcon, timeout batching gives **6.270%** horizon authentication coverage an
 
 ## Figures and complete results
 
-- [Authentication coverage (PDF)](../reference/development/figures/authentication_coverage.pdf): reception-anchored delay thresholds, `k=5`.
-- [Ordinary reception impact (PDF)](../reference/development/figures/surveillance_impact.pdf): all four algorithms and `k=1,5,10,20`.
-- [Separate clocks and pending work (PDF)](../reference/development/figures/authentication_clocks_and_pending.pdf): conditional delays alongside full outcome fractions.
-- [All replay rows (CSV)](../reference/development/replay_overview.csv) and [full report (JSON)](../reference/development/replay_summary.json).
+- [Authentication coverage (PDF)](../results/reference/development/figures/authentication_coverage.pdf): reception-anchored delay thresholds, `k=5`.
+- [Ordinary reception impact (PDF)](../results/reference/development/figures/surveillance_impact.pdf): all four algorithms and `k=1,5,10,20`.
+- [Separate clocks and pending work (PDF)](../results/reference/development/figures/authentication_clocks_and_pending.pdf): conditional delays alongside full outcome fractions.
+- [All replay rows (CSV)](../results/reference/development/replay_overview.csv) and [full report (JSON)](../results/reference/development/replay_summary.json).
 
 SVG/PNG versions and a figure-integrity manifest are saved beside the PDFs. The [README](../README.md) gives exact reproduction commands. The comparison checker validates the complete matrix and all numerical fields, rather than only the selected examples above.
 
