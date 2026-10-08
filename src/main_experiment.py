@@ -1,8 +1,8 @@
 """Numbered, provenance-checked workflow for the daytime and nighttime study.
 
 The public commands share these functions. Preparation never substitutes sample
-data; replay never creates a missing signature cache. Completed workloads are
-reused, but an interrupted unfinished workload must be signed again.
+data; replay never creates a missing signature cache. Completed workloads and
+public aircraft checkpoints are verified and reused after interruption.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from src.runtime import RunLock, atomic_json
 ROOT = Path(__file__).resolve().parents[1]
 WINDOWS = ("daytime", "nighttime")
 STAGES = ("prepare", "sign", "replay", "report", "compare", "all")
+ANALYSIS_MODES = ("validated_recording", "conditional_recorded_timing")
 
 
 def _read(path):
@@ -42,6 +43,38 @@ def _path(root, value):
     return (root / value).resolve()
 
 
+def _validate_algorithm_selection(config):
+    if "algorithms" not in config:
+        return
+    selection = config["algorithms"]
+    if (not isinstance(selection, list) or not selection
+            or any(not isinstance(name, str) or not name.strip() for name in selection)
+            or len(set(selection)) != len(selection)):
+        raise ValueError("algorithms must contain distinct nonempty algorithm names.")
+
+
+def selected_algorithm_configs(config):
+    """Select this study's algorithms without disabling available backends.
+
+    Configurations without an explicit selection retain the historical behavior
+    of using every enabled algorithm.
+    """
+    _validate_algorithm_selection(config)
+    entries = _read(config["algorithms_config"])
+    if not isinstance(entries, dict) or any(not isinstance(entry, dict) for entry in entries.values()):
+        raise ValueError("Algorithm configuration must contain named algorithm objects.")
+    enabled = {name: entry for name, entry in entries.items() if entry.get("enabled", True)}
+    selection = config.get("algorithms", list(enabled))
+    if not selection:
+        raise ValueError("At least one signature algorithm must be enabled.")
+    for name in selection:
+        if name not in entries:
+            raise ValueError(f"Unknown selected algorithm: {name}.")
+        if name not in enabled:
+            raise ValueError(f"Selected algorithm is disabled: {name}.")
+    return {name: enabled[name] for name in selection}
+
+
 def load_config(path, *, root=ROOT):
     """Resolve all configured paths against the repository, not the shell cwd."""
     root = Path(root).resolve()
@@ -50,8 +83,11 @@ def load_config(path, *, root=ROOT):
     if not isinstance(config, dict) or config.get("schema_version") != 1:
         raise ValueError("Experiment configuration requires schema_version: 1.")
     result = dict(config, config_path=path)
+    if config.get("analysis_mode", "validated_recording") not in ANALYSIS_MODES:
+        raise ValueError("analysis_mode must be validated_recording or conditional_recorded_timing.")
     for field in ("data_manifest", "algorithms_config", "hardware_profiles", "scenarios", "comparison_output"):
         result[field] = _path(root, config.get(field))
+    _validate_algorithm_selection(config)
     intervals = config.get("intervals")
     if (not isinstance(intervals, list) or not intervals
             or any(type(k) is not int or k < 1 for k in intervals)
@@ -108,6 +144,59 @@ def preflight_inputs(config, names):
     return {name: entries[name] for name in names}
 
 
+def _require_experiment_ready(config, names, *, metadata=None):
+    """Require resolved acquisition issues or an explicit conditional analysis.
+
+    Preparation remains useful for inspecting traffic even when its timestamps
+    cannot support a transmission replay. Recheck the manifest in public stage
+    functions as well as the combined runner so direct calls cannot bypass this
+    distinction. Conditional mode retains every limitation in replay provenance;
+    it does not validate or repair the recording. Older manifests without the
+    optional field remain compatible.
+    """
+    if metadata is None:
+        manifest = _read(config["data_manifest"])
+        if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+            raise ValueError("Data manifest requires schema_version: 1.")
+        metadata = manifest.get("windows", {})
+    if not isinstance(metadata, dict):
+        raise ValueError("Data manifest windows must contain named recording metadata objects.")
+    reasons = []
+    for name in names:
+        entry = metadata.get(name)
+        if not isinstance(entry, dict):
+            raise ValueError(f"Data manifest must describe the {name} recording under windows.{name}.")
+        blockers = entry.get("experiment_blockers", [])
+        if (not isinstance(blockers, list)
+                or any(not isinstance(item, str) or not item.strip() for item in blockers)):
+            raise ValueError(f"windows.{name}.experiment_blockers must be a list of nonempty strings "
+                             f"in {config['data_manifest']}.")
+        reasons.extend(f"{name}: {reason}" for reason in blockers)
+    mode = config.get("analysis_mode", "validated_recording")
+    if mode not in ANALYSIS_MODES:
+        raise ValueError("Unknown analysis_mode.")
+    if reasons and mode != "conditional_recorded_timing":
+        raise ValueError("Experiment blocked by unresolved recording input-quality issues:\n- "
+                         + "\n- ".join(reasons)
+                         + f"\nReview the recording input audit and resolve the blockers recorded in "
+                           f"{config['data_manifest']} before signing, replay, reporting or comparison. "
+                           "Step 01_prepare remains available for traffic inspection.")
+
+
+def _analysis_context(config, name):
+    """Retain acquisition limitations in the immutable replay request identity."""
+    metadata = _read(config["data_manifest"])["windows"][name]
+    return {"mode": config.get("analysis_mode", "validated_recording"),
+            "recording_status": metadata.get("status"),
+            "recording_limitations": metadata.get("experiment_blockers", []),
+            "timestamp_semantics": metadata.get("timestamp_semantics"),
+            "boundary_basis": metadata.get("boundary_basis"),
+            "interpretation": ("Supplied timestamps are assumed transmission times. Overlap losses are "
+                               "conditional model outputs, not measured or calibrated operational losses. "
+                               "Only exported decoded frames contribute observed interference; missing "
+                               "Mode A/C and undecoded traffic are not reconstructed.")}
+
+
 def prepare_window(config, name, metadata, *, validate_only=False):
     from src.processing.prepare_recording import prepare_recording, validate_prepared_recording
 
@@ -126,12 +215,7 @@ def _study_cases(config):
     from src.experiment.model_support import validate_scenario
     from src.experiment.hardware_profiles import load_profiles, timing_samples_ms
 
-    entries = _read(config["algorithms_config"])
-    if not isinstance(entries, dict):
-        raise ValueError("Algorithm configuration must be an object.")
-    algorithms = [name for name, entry in entries.items() if entry.get("enabled", True)]
-    if not algorithms:
-        raise ValueError("At least one signature algorithm must be enabled.")
+    algorithms = list(selected_algorithm_configs(config))
     scenarios, seeds = load_scenarios(config["scenarios"])
     profiles = load_profiles(config["hardware_profiles"])
     for scenario in scenarios:
@@ -202,6 +286,8 @@ def validate_signature_inventory(config, name):
 
 
 def sign_window(config, name, *, validate_only=False):
+    _require_experiment_ready(config, (name,))
+
     from src.experiment.io_support import load_trace
     from src.experiment.signed_workload import backend_identity, build_or_load_workload
     from src.experiment.channel_trace import load_channel_trace, replay_window as bounds, validate_coverage
@@ -252,6 +338,8 @@ def sign_window(config, name, *, validate_only=False):
 
 
 def replay_window(config, name, *, validate_only=False):
+    _require_experiment_ready(config, (name,))
+
     from src.experiment.signed_experiment import run
 
     # Stage 3 may only consume caches explicitly completed by stage 2.
@@ -262,12 +350,15 @@ def replay_window(config, name, *, validate_only=False):
         channel_trace=output / "01_prepared" / "channel.jsonl",
         algorithms_config=config["algorithms_config"], hardware_profiles=config["hardware_profiles"],
         scenarios=config["scenarios"], output_dir=output / "03_replay", workloads_dir=output / "02_signed",
-        intervals=config["intervals"], algorithm=None, scenario=None, seeds=None,
+        intervals=config["intervals"], algorithm=config.get("algorithms"), scenario=None, seeds=None,
+        analysis_context=_analysis_context(config, name),
         replay_model="signed_detached", force=False, validate_only=validate_only, require_workloads=True,
     ))
 
 
 def report_window(config, name, *, validate_only=False):
+    _require_experiment_ready(config, (name,))
+
     from src.experiment.main_report import generate_report
 
     # Validate replay provenance and cryptography before presenting its findings.
@@ -276,6 +367,8 @@ def report_window(config, name, *, validate_only=False):
 
 
 def compare(config, *, validate_only=False):
+    _require_experiment_ready(config, WINDOWS)
+
     from src.experiment.main_report import compare_windows
 
     return compare_windows(config["windows"]["daytime"]["output"],
@@ -290,6 +383,8 @@ def run(config, *, window="daytime", stage="all", validate_only=False):
         raise ValueError("Comparison requires --window both.")
     names = WINDOWS if window == "both" else (window,)
     metadata = preflight_inputs(config, names)
+    if stage not in ("all", "prepare"):
+        _require_experiment_ready(config, names, metadata=metadata)
     result = {}
     with ExitStack() as locks:
         if not validate_only:
@@ -302,6 +397,10 @@ def run(config, *, window="daytime", stage="all", validate_only=False):
             if stage not in ("all", "prepare"):
                 prepare_window(config, name, metadata[name], validate_only=True)
             for selected in steps:
+                if selected != "prepare":
+                    # Check every selected recording before the first expensive
+                    # stage, including nighttime when daytime is processed first.
+                    _require_experiment_ready(config, names, metadata=metadata)
                 if selected == "prepare":
                     result[f"{name}:prepare"] = prepare_window(config, name, metadata[name], validate_only=validate_only)
                 elif selected == "sign":

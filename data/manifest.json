@@ -2,13 +2,26 @@
   "schema_version": 1,
   "windows": {
     "daytime": {
-      "status": "awaiting_dataset",
-      "timestamp_mode": null,
-      "recording_start": null,
-      "recording_end": null,
-      "source": null,
-      "observation_domain": null,
-      "notes": "Complete this entry from acquisition metadata; timestamps must use explicit seconds. Planned recording: 60-minute target window plus 10-minute authentication follow-up."
+      "status": "traffic_only_requires_receiver_timestamps",
+      "timestamp_mode": "unix_seconds",
+      "recording_start": 1791444602.9940886,
+      "recording_end": 1791448819.6728263,
+      "source": "User-supplied pyModeS network JSONL export from airsquitter.lr.tudelft.nl:10004 over TU Delft VPN",
+      "observation_domain": "Single receiver connected to an ADS-B antenna on the roof of the Faculty of Aerospace Engineering, TU Delft, Delft, Netherlands (user report)",
+      "notes": "Prepare counts and cumulative DF plots only. Do not sign or replay as the main experiment while experiment_blockers are present. The original JSONL remains unchanged.",
+      "acquisition_command": "uvx --with pyModeS modes live --network airsquitter.lr.tudelft.nl:10004 --dump-to daytime.jsonl",
+      "inferred_decoder_version": "pyModeS 3.6.0; inferred from matching cached environments, original command was unpinned",
+      "reported_local_window": "Thursday, October 10th 2026, 09:30–10:40 (user wording)",
+      "timestamp_date_note": "File Unix timestamps indicate Thursday 2026-10-08, 09:30:02.994089–10:40:19.672826 Europe/Amsterdam. The stated October 10 date differs.",
+      "input_sha256": "ba98b11206f315faa3b396b18d5d47544daa929e5a13f84864599af0b838037f",
+      "input_audit": "results/daytime/input_audit.json",
+      "boundary_basis": "For traffic-only preparation, anchor the first hour to the earliest supplied timestamp; use the next representable timestamp after the final observation as the exclusive file bound. These file bounds are not verified receiver start/stop times or proof of RF coverage.",
+      "timestamp_semantics": "Receiver-counter differences within TCP bursts, re-anchored to host wall clock for every burst; original counters omitted from JSONL.",
+      "experiment_blockers": [
+        "The decoder re-anchors every TCP burst to host wall-clock time. Cross-burst timestamps include network/processing jitter, so the radio-overlap model would measure timestamp artifacts as collisions.",
+        "The JSONL omits original receiver counters; sorting cannot reconstruct the lost cross-burst timing. A lossless receiver recording or a new capture is needed.",
+        "The decoder skips Mode A/C replies. This file represents recorded decoded Mode S frames, not confirmed complete 1090 MHz traffic."
+      ]
     },
     "nighttime": {
       "status": "awaiting_dataset",

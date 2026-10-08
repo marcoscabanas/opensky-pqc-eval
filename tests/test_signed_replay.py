@@ -66,6 +66,60 @@ def replay(records=None, interval=1, profile=None, workload=None, channel_trace=
 
 
 class SignedReplayTest(unittest.TestCase):
+    def test_receiver_retention_shortcut_matches_general_receiver_with_expiry(self):
+        fast = signed_replay._ReplayReceiver(1, 0.1)
+        reference = signed_replay.ReplayReceiver(1, 0.1)
+        records = trace_fixture(count=4)
+        for timestamp in (0, 0.5, 1.1, 1.100001, 2.5, 0.3):
+            for record in records:
+                raw = bytes.fromhex(record["raw_msg"])
+                fast.observe_message(raw, timestamp)
+                reference.observe_message(raw, timestamp)
+                self.assertEqual(fast.observations, reference.observations)
+        for raw, timestamp in ((b"short", 0), (bytes.fromhex(records[0]["raw_msg"]), -1),
+                               (bytes.fromhex(records[0]["raw_msg"]), float("nan"))):
+            for receiver in (fast, reference):
+                with self.assertRaises(ValueError):
+                    receiver.observe_message(raw, timestamp)
+
+    def test_receiver_retention_shortcut_preserves_full_replay_outputs(self):
+        for mode in ("signed_before_send", "signed_detached"):
+            for collision in ("independent", "destructive_overlap"):
+                options = {"replay_model": mode, "channel_mode": collision,
+                           "receive_jitter_ms": 0.2, "fragment_copies": 2}
+                actual = replay(**options)
+                with patch.object(signed_replay, "_ReplayReceiver", signed_replay.ReplayReceiver):
+                    expected = replay(**options)
+                self.assertEqual(actual, expected)
+
+    def test_compact_radio_runs_expand_exactly_and_preserve_group_offsets(self):
+        groups = [signed_replay.Group({}, (), 0) for _ in range(3)]
+        groups[0].chunks = [(0.1, 7, 0.00012), (0.5, 4, 0.01)]
+        groups[0].sent = 11
+        groups[2].chunks = [(0.2, 3, 0.1)]
+        groups[2].sent = 3
+        expected = np.concatenate([first + np.arange(count, dtype=float) * step
+                                   for group in groups for first, count, step in group.chunks])
+        with tempfile.TemporaryDirectory() as scratch, patch.object(signed_replay, "_MEMMAP_THRESHOLD", 1), \
+                patch.object(signed_replay, "_ARRAY_CHUNK", 2):
+            actual, offsets = signed_replay._flatten_radio(groups, 14, scratch)
+            self.assertIsInstance(actual, np.memmap)
+            np.testing.assert_array_equal(actual, expected)
+            np.testing.assert_array_equal(offsets, [0, 11, 14])
+            self.assertEqual([group.offset for group in groups], [0, 11, 11])
+            self.assertTrue(all(not group.chunks for group in groups))
+            del actual
+
+    def test_disk_backed_schedule_matches_memory_for_jitter_and_fragment_copies(self):
+        for jitter in (0, 0.2):
+            options = {"receive_jitter_ms": jitter, "fragment_copies": 2,
+                       "loss": {"kind": "iid", "probability": 0.1}}
+            expected = replay(**options)
+            with patch.object(signed_replay, "_MEMMAP_THRESHOLD", 1), \
+                    patch.object(signed_replay, "_ARRAY_CHUNK", 3):
+                actual = replay(**options)
+            self.assertEqual(actual, expected)
+
     def test_declared_window_accounts_for_quiet_edges_and_boundary_followup(self):
         records = trace_fixture(count=2, spacing=6, aircraft=("ABCDEF",))
         for row in records:
@@ -201,6 +255,27 @@ class SignedReplayTest(unittest.TestCase):
         self.assertAlmostEqual(result["events"][0]["auth_tx_start_s"], FRAME_S)
         self.assertAlmostEqual(result["events"][1]["ordinary_transmission_starts_s"][0], 2 * FRAME_S)
         self.assertAlmostEqual(result["summary"]["ordinary_transmission_delay_ms_max"], 0.06)
+        self.assertAlmostEqual(result["summary"]["authentication_added_ordinary_delay_ms_max"], 0.06)
+        self.assertEqual(result["summary"]["baseline_ordinary_radio_queue_ms_max"], 0)
+        self.assertEqual(result["summary"]["authentication_added_ordinary_delay_positive_messages"], 1)
+
+    def test_detached_source_time_ties_have_baseline_queue_but_no_authentication_added_delay(self):
+        records = trace_fixture(count=4, spacing=0, aircraft=("ABCDEF",))
+        records[-1]["relative_time_s"] = 0.1
+        summary = replay(records, profile=profile_fixture(sign_ms=10000), followup_s=1,
+                         replay_model="signed_detached")["summary"]
+        self.assertAlmostEqual(summary["ordinary_transmission_delay_ms_max"], 0.24)
+        self.assertAlmostEqual(summary["baseline_ordinary_radio_queue_ms_max"], 0.24)
+        self.assertEqual(summary["authentication_added_ordinary_delay_ms_max"], 0)
+        self.assertEqual(summary["authentication_added_ordinary_delay_positive_messages"], 0)
+        self.assertEqual(summary["ordinary_delay_control_cohort_messages"], 4)
+
+    def test_detached_no_authentication_radio_control_keeps_aircraft_independent(self):
+        records = trace_fixture(count=2, spacing=0, aircraft=("ABCDEF", "ABC001"))
+        summary = replay(records, profile=profile_fixture(sign_ms=10000), followup_s=1,
+                         replay_model="signed_detached")["summary"]
+        self.assertAlmostEqual(summary["baseline_ordinary_radio_queue_ms_max"], 0.12)
+        self.assertEqual(summary["authentication_added_ordinary_delay_ms_max"], 0)
 
     def test_detached_finite_queue_counts_object_during_its_last_frame(self):
         records = trace_fixture(count=2, spacing=0.005425, aircraft=("ABCDEF",))

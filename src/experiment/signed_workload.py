@@ -2,7 +2,8 @@
 
 The cache contains public keys and complete encoded authentication objects, never
 private keys. A completed cache is published atomically and verified on every
-load. Interrupted builds are rebuilt; they cannot masquerade as complete input.
+load. Completed aircraft shards survive interrupted builds; incomplete aircraft
+are restarted with new keys and cannot masquerade as complete input.
 No replay loss seed or processor profile influences the signed bytes.
 """
 
@@ -12,12 +13,16 @@ import argparse
 import base64
 import ctypes
 import ctypes.util
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from contextlib import ExitStack
 import fcntl
+import heapq
 import hashlib
 import importlib
 import importlib.util
 import json
 import math
+import multiprocessing
 import os
 from pathlib import Path
 import platform
@@ -236,6 +241,147 @@ def _build(path, config, source_groups, unsigned, identity):
             signer.close()
 
 
+def _worker_count(value):
+    if value is None:
+        supplied = os.environ.get("ADSB_SIGNING_WORKERS")
+        if supplied is None:
+            return min(4, os.cpu_count() or 1)
+        try:
+            value = int(supplied)
+        except ValueError as exc:
+            raise ValueError("ADSB_SIGNING_WORKERS must be a positive integer.") from exc
+    if type(value) is not int or value < 1:
+        raise ValueError("Signing workers must be a positive integer.")
+    return value
+
+
+def _build_aircraft(root, config, aircraft_groups, identity):
+    """One process owns one aircraft key; only public checkpoint files escape."""
+    root = Path(root)
+    icao = aircraft_groups[0][0]
+    destination = root / icao
+    temporary = Path(tempfile.mkdtemp(prefix=f".{icao}.building-", dir=root))
+    try:
+        _build(temporary, config, aircraft_groups, [], identity)
+        os.rename(temporary, destination)
+        sync_directory(root)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    return icao
+
+
+def _merge_group_files(inputs, destination):
+    """Merge public JSONL in trace order without loading encoded signatures."""
+    merged_indices = []
+    with ExitStack() as stack:
+        output = stack.enter_context(destination.open("xb"))
+        streams, positions, queue = [], [], []
+        for number, (path, indices) in enumerate(inputs):
+            streams.append(stack.enter_context(path.open("rb")))
+            positions.append(iter(indices))
+            first = next(positions[-1], None)
+            if first is not None:
+                heapq.heappush(queue, (first, number))
+        while queue:
+            index, number = heapq.heappop(queue)
+            line = streams[number].readline()
+            if not line:
+                raise ValueError("Aircraft checkpoint is missing a group during merge.")
+            output.write(line)
+            merged_indices.append(index)
+            following = next(positions[number], None)
+            if following is not None:
+                heapq.heappush(queue, (following, number))
+        if any(stream.read(1) for stream in streams):
+            raise ValueError("Aircraft checkpoint has unexpected trailing groups during merge.")
+        output.flush()
+        os.fsync(output.fileno())
+    return merged_indices
+
+
+def _build_checkpointed(path, checkpoints, config, source_groups, unsigned, identity, workers):
+    """Resume independently verifiable aircraft, with bounded process and file use."""
+    by_aircraft, indices = {}, {}
+    for index, group in enumerate(source_groups):
+        by_aircraft.setdefault(group[0], []).append(group)
+        indices.setdefault(group[0], []).append(index)
+    checkpoints.mkdir(exist_ok=True)
+    identity_path = checkpoints / "identity.json"
+    if identity_path.exists():
+        if json.loads(identity_path.read_text(encoding="utf-8")) != identity:
+            raise ValueError("Aircraft checkpoint identity differs from this signed workload.")
+    else:
+        _write_durable(identity_path, _json_bytes(identity))
+        sync_directory(checkpoints)
+    # A killed worker may leave an incomplete temporary directory. It contains
+    # only public data, and a new aircraft key must replace that unfinished shard.
+    for unfinished in checkpoints.glob(".*.building-*"):
+        if unfinished.is_dir():
+            shutil.rmtree(unfinished)
+    pending = []
+    for icao, groups in by_aircraft.items():
+        shard = checkpoints / icao
+        if shard.exists():
+            # Hashes alone are insufficient: validate signatures, membership and
+            # context before accepting a durable shard from an earlier process.
+            _load(shard, groups, [], identity)
+        else:
+            pending.append(groups)
+    # Largest aircraft first prevents one busy aircraft becoming a serial tail.
+    pending.sort(key=len, reverse=True)
+    count = min(workers, len(pending))
+    if count <= 1:
+        for groups in pending:
+            _build_aircraft(checkpoints, config, groups, identity)
+    else:
+        # Spawn avoids inherited native crypto state. Only at most `count`
+        # aircraft are serialized into the worker queue at a time; workers never
+        # receive the whole trace or return a large signature array to the parent.
+        with ProcessPoolExecutor(max_workers=count,
+                                 mp_context=multiprocessing.get_context("spawn")) as pool:
+            iterator = iter(pending)
+            active = {pool.submit(_build_aircraft, checkpoints, config, next(iterator), identity)
+                      for _ in range(count)}
+            while active:
+                finished, active = wait(active, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    future.result()
+                    groups = next(iterator, None)
+                    if groups is not None:
+                        active.add(pool.submit(_build_aircraft, checkpoints, config, groups, identity))
+    keys = {}
+    inputs = []
+    for icao in sorted(by_aircraft):
+        shard = checkpoints / icao
+        keys.update(json.loads((shard / "public_keys.json").read_text(encoding="utf-8")))
+        inputs.append((shard / "groups.jsonl", indices[icao]))
+    # Two or more bounded merge passes avoid hundreds of simultaneous open files
+    # on macOS, while keeping signature bytes on disk instead of in Python lists.
+    intermediate = path / ".merge"
+    if len(inputs) > 64:
+        intermediate.mkdir()
+        level = 0
+        while len(inputs) > 64:
+            following = []
+            for start in range(0, len(inputs), 64):
+                output = intermediate / f"{level}-{start}.jsonl"
+                ordering = _merge_group_files(inputs[start:start + 64], output)
+                following.append((output, ordering))
+            inputs = following
+            level += 1
+    _merge_group_files(inputs, path / "groups.jsonl")
+    if intermediate.exists():
+        shutil.rmtree(intermediate)
+    _write_durable(path / "public_keys.json", _json_bytes(keys))
+    manifest = {"schema_version": SCHEMA_VERSION, "complete": True, "identity": identity,
+                "groups": len(source_groups), "unsigned_trace_ids": unsigned,
+                "groups_sha256": sha256_file(path / "groups.jsonl"),
+                "public_keys_sha256": sha256_file(path / "public_keys.json")}
+    _write_durable(path / "manifest.json", _json_bytes(manifest))
+    sync_directory(path)
+
+
 def _load(path, source_groups, unsigned, identity):
     try:
         manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
@@ -291,14 +437,18 @@ def _load(path, source_groups, unsigned, identity):
                          "private_keys_persisted": False}}
 
 
-def build_or_load_workload(trace, algorithm, interval, max_batch_wait_s, cache_dir, *, validate_only=False):
+def build_or_load_workload(trace, algorithm, interval, max_batch_wait_s, cache_dir, *,
+                           validate_only=False, workers=None):
     """Build once, or validate and reuse exact signed bytes independently of RF runs.
 
     One key is generated per aircraft for this workload's provisioned session.
     Only public material is retained. A process lock serializes competing builds
-    and is released automatically on interruption; an interrupted workload starts
-    afresh with new keys. Completed caches are never silently repaired or replaced.
+    and is released automatically on interruption. Completed aircraft checkpoints
+    are verified and reused; an unfinished aircraft restarts with a new key.
+    Completed caches are never silently repaired or replaced. Worker count is an
+    execution setting, not part of the signed scientific input or cache identity.
     """
+    workers = _worker_count(workers)
     config, groups, unsigned, identity = _prepare(trace, algorithm, interval, max_batch_wait_s)
     root = Path(cache_dir)
     cache_id = _digest(identity)
@@ -312,12 +462,14 @@ def build_or_load_workload(trace, algorithm, interval, max_batch_wait_s, cache_d
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         if destination.exists():
             return _load(destination, groups, unsigned, identity)
+        checkpoints = root / f".{cache_id}.partial"
         temporary = Path(tempfile.mkdtemp(prefix=f".{cache_id}.building-", dir=root))
         try:
-            _build(temporary, config, groups, unsigned, identity)
+            _build_checkpointed(temporary, checkpoints, config, groups, unsigned, identity, workers)
             result = _load(temporary, groups, unsigned, identity)
             os.rename(temporary, destination)
             sync_directory(root)
+            shutil.rmtree(checkpoints)
             result["evidence"]["cache_dir"] = str(destination.resolve())
             return result
         finally:
@@ -333,12 +485,14 @@ def main():
     parser.add_argument("--intervals", nargs="+", required=True, type=int)
     parser.add_argument("--max-batch-wait-s", type=float)
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--workers", type=int,
+                        help="Parallel aircraft signers (default: ADSB_SIGNING_WORKERS or at most 4 CPUs).")
     args = parser.parse_args()
     trace = load_trace(args.trace)
     for algorithm in args.algorithms:
         for interval in args.intervals:
             result = build_or_load_workload(trace, algorithm, interval, args.max_batch_wait_s, args.cache_dir,
-                                           validate_only=args.validate_only)
+                                           validate_only=args.validate_only, workers=args.workers)
             print(json.dumps(result["evidence"], sort_keys=True), flush=True)
 
 

@@ -3,6 +3,7 @@ import copy
 import dataclasses
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -16,6 +17,17 @@ def trace_fixture():
     return [{"trace_id": f"m{index}", "relative_time_s": index * 0.2,
              "icao": "40621D", "raw_msg": f"8D40621D58C382D690C8AC2863{0xA7 + index:02X}"}
             for index in range(3)]
+
+
+def aircraft_trace(count=3, messages=3):
+    rows = []
+    for aircraft in range(count):
+        icao = f"{aircraft + 1:06X}"
+        for index, source in enumerate(trace_fixture()[:messages]):
+            rows.append({**source, "trace_id": f"{icao}-{index}", "icao": icao,
+                         "relative_time_s": source["relative_time_s"] + aircraft * .01,
+                         "raw_msg": source["raw_msg"][:2] + icao + source["raw_msg"][8:]})
+    return rows
 
 
 @unittest.skipUnless(importlib.util.find_spec("cryptography"), "cryptography is not installed")
@@ -162,7 +174,7 @@ class SignedWorkloadTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incomplete"):
             self.build()
 
-    def test_interruption_leaves_no_published_completion_and_rebuilds(self):
+    def test_interruption_leaves_only_public_partial_checkpoint_and_rebuilds(self):
         actual = workload.make_envelope
         calls = 0
 
@@ -176,8 +188,101 @@ class SignedWorkloadTest(unittest.TestCase):
         with patch.object(workload, "make_envelope", side_effect=interrupt):
             with self.assertRaises(KeyboardInterrupt):
                 self.build()
-        self.assertFalse(any(path.is_dir() for path in self.cache.iterdir()))
+        directories = [path for path in self.cache.iterdir() if path.is_dir()]
+        self.assertEqual(len(directories), 1)
+        self.assertTrue(directories[0].name.endswith(".partial"))
+        self.assertEqual([path.name for path in directories[0].iterdir()], ["identity.json"])
         self.assertEqual(len(self.build()["groups"]), 3)
+
+    def test_process_workers_preserve_groups_keys_and_cache_identity(self):
+        trace = aircraft_trace()
+        result = workload.build_or_load_workload(trace, "ECDSA-P256", 1, None, self.cache, workers=2)
+        self.assertEqual(len(result["groups"]), 9)
+        self.assertEqual(result["evidence"]["cryptographically_verified_signatures"], 9)
+        aircraft_keys = {}
+        for group in result["groups"]:
+            icao = group["members"][0].split("-")[0]
+            aircraft_keys.setdefault(icao, set()).add(group["public_key"])
+        self.assertEqual(len(aircraft_keys), 3)
+        self.assertTrue(all(len(keys) == 1 for keys in aircraft_keys.values()))
+        self.assertEqual(len({next(iter(keys)) for keys in aircraft_keys.values()}), 3)
+        with patch.object(workload, "_build_aircraft", side_effect=AssertionError("must reuse")):
+            serial = workload.build_or_load_workload(trace, "ECDSA-P256", 1, None, self.cache, workers=1)
+        self.assertEqual(result, serial)
+        other = workload.build_or_load_workload(trace, "ECDSA-P256", 1, None,
+                                                self.cache / "independent", workers=1)
+        self.assertEqual(result["evidence"]["cache_identity"], other["evidence"]["cache_identity"])
+        self.assertEqual([row["members"] for row in result["groups"]],
+                         [row["members"] for row in other["groups"]])
+        self.assertEqual([row["formed_s"] for row in result["groups"]],
+                         [row["formed_s"] for row in other["groups"]])
+
+    def interrupted_aircraft_build(self):
+        trace = aircraft_trace(count=2)
+        actual = workload.make_envelope
+        count = 0
+
+        def interrupt(*args, **kwargs):
+            nonlocal count
+            count += 1
+            if count == 4:
+                raise KeyboardInterrupt("after first complete aircraft")
+            return actual(*args, **kwargs)
+
+        with patch.object(workload, "make_envelope", side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                workload.build_or_load_workload(trace, "ECDSA-P256", 1, None, self.cache, workers=1)
+        checkpoints = next(self.cache.glob("*.partial"))
+        return trace, checkpoints / "000001"
+
+    def test_completed_aircraft_checkpoint_is_reused_after_interruption(self):
+        trace, shard = self.interrupted_aircraft_build()
+        first_rows = [json.loads(line) for line in (shard / "groups.jsonl").read_text().splitlines()]
+        first_key = json.loads((shard / "public_keys.json").read_text())["000001"]
+        with patch.object(workload, "make_envelope", wraps=workload.make_envelope) as sign:
+            result = workload.build_or_load_workload(trace, "ECDSA-P256", 1, None, self.cache, workers=1)
+        self.assertEqual(sign.call_count, 3)
+        self.assertFalse(shard.parent.exists())
+        groups = [row for row in result["groups"] if row["members"][0].startswith("000001-")]
+        self.assertEqual(len(groups), 3)
+        for row, original in zip(groups, first_rows):
+            self.assertEqual(base64.b64encode(encode_envelope(row["envelope"])).decode(), original["envelope"])
+            self.assertEqual(base64.b64encode(row["public_key"]).decode(), first_key)
+
+    def test_rehashed_checkpoint_signature_tamper_is_rejected_on_resume(self):
+        trace, shard = self.interrupted_aircraft_build()
+        rows = [json.loads(line) for line in (shard / "groups.jsonl").read_text().splitlines()]
+        envelope = decode_envelope(base64.b64decode(rows[0]["envelope"]))
+        corrupted = dataclasses.replace(envelope, signature=b"\0" * 64)
+        rows[0]["envelope"] = base64.b64encode(encode_envelope(corrupted)).decode()
+        (shard / "groups.jsonl").write_bytes(b"".join(workload._json_bytes(row) for row in rows))
+        manifest = json.loads((shard / "manifest.json").read_text())
+        manifest["groups_sha256"] = workload.sha256_file(shard / "groups.jsonl")
+        (shard / "manifest.json").write_bytes(workload._json_bytes(manifest))
+        with patch.object(workload, "make_envelope", side_effect=AssertionError("must not sign")):
+            with self.assertRaisesRegex(ValueError, "cryptographic verification"):
+                workload.build_or_load_workload(trace, "ECDSA-P256", 1, None, self.cache, workers=1)
+
+    def test_many_aircraft_merge_limits_open_files_and_preserves_order(self):
+        trace = aircraft_trace(count=67, messages=1)
+        with patch.object(workload, "_merge_group_files", wraps=workload._merge_group_files) as merge:
+            result = workload.build_or_load_workload(trace, "ECDSA-P256", 1, None, self.cache, workers=1)
+        self.assertEqual(len(result["groups"]), 67)
+        self.assertEqual(merge.call_count, 3)
+        self.assertTrue(all(len(call.args[0]) <= 64 for call in merge.call_args_list))
+        self.assertEqual([group["members"][0] for group in result["groups"]],
+                         [row["trace_id"] for row in sorted(trace, key=lambda row: row["relative_time_s"])])
+
+    def test_worker_count_is_explicit_validated_execution_setting(self):
+        with patch.dict(os.environ, {"ADSB_SIGNING_WORKERS": "2"}):
+            self.assertEqual(workload._worker_count(None), 2)
+            self.assertEqual(workload._worker_count(1), 1)
+        for value in (0, -1, True, 1.5):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "positive integer"):
+                workload._worker_count(value)
+        with patch.dict(os.environ, {"ADSB_SIGNING_WORKERS": "invalid"}):
+            with self.assertRaisesRegex(ValueError, "positive integer"):
+                workload._worker_count(None)
 
     def test_group_without_complete_members_has_no_key_or_signature(self):
         result = self.build(interval=4)
@@ -200,6 +305,21 @@ class SignedWorkloadTest(unittest.TestCase):
 
 
 class NativeSignedWorkloadTest(unittest.TestCase):
+    def test_spawned_workers_sign_and_verify_native_algorithms(self):
+        try:
+            oqs = workload._installed_oqs()
+        except RuntimeError as exc:
+            self.skipTest(str(exc))
+        for algorithm in ("ML-DSA-44", "FN-DSA-512"):
+            if workload._algorithm_config(algorithm)["implementation"] not in oqs.get_enabled_sig_mechanisms():
+                continue
+            with self.subTest(algorithm=algorithm), tempfile.TemporaryDirectory() as directory:
+                result = workload.build_or_load_workload(aircraft_trace(count=2), algorithm, 2, None,
+                                                        directory, workers=2)
+                self.assertEqual(result["evidence"]["cryptographically_verified_signatures"], 2)
+                self.assertEqual(len(result["unsigned_trace_ids"]), 2)
+                self.assertEqual(len({row["public_key"] for row in result["groups"]}), 2)
+
     def test_real_post_quantum_signatures_verify_from_public_cache(self):
         try:
             oqs = workload._installed_oqs()

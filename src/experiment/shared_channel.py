@@ -43,6 +43,8 @@ FRAME_S = 120e-6
 SOURCE_URL = "https://ntrs.nasa.gov/api/citations/20040171487/downloads/20040171487.pdf"
 _DRAW_CHUNK = 1_000_000
 _MAX_TRANSITIONS = 2_000_000
+_COLLISION_SORT_CHUNK = 1_000_000
+_COLLISION_BUCKET_S = 10.0
 
 
 def _number(value, name, *, positive=False):
@@ -59,10 +61,14 @@ def _starts(values, name, horizon):
         result = np.asarray(values, dtype=np.float64)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be a one-dimensional sequence of finite times.") from exc
-    if result.ndim != 1 or not np.all(np.isfinite(result)):
+    if result.ndim != 1:
         raise ValueError(f"{name} must be a one-dimensional sequence of finite times.")
-    if np.any(result < 0) or np.any(result > horizon):
-        raise ValueError(f"{name} must lie within [0, horizon].")
+    for first in range(0, len(result), _DRAW_CHUNK):
+        chunk = result[first:first + _DRAW_CHUNK]
+        if not np.all(np.isfinite(chunk)):
+            raise ValueError(f"{name} must be a one-dimensional sequence of finite times.")
+        if np.any(chunk < 0) or np.any(chunk > horizon):
+            raise ValueError(f"{name} must lie within [0, horizon].")
     return result
 
 
@@ -204,11 +210,192 @@ def _variable_collision_mask(starts, durations):
     return collisions
 
 
+def _auth_runs(auth, offsets):
+    """Validate contiguous monotonic schedules without a full-size temporary."""
+    offsets = np.asarray(offsets)
+    if (offsets.ndim != 1 or offsets.dtype.kind not in "iu" or not len(offsets)
+            or offsets[0] != 0 or offsets[-1] != len(auth)
+            or np.any(offsets[1:] <= offsets[:-1])):
+        raise ValueError("auth_run_offsets must partition auth_starts into nonempty sorted runs.")
+    offsets = offsets.astype(np.int64, copy=False)
+    for first in range(1, len(auth), _DRAW_CHUNK):
+        last = min(first + _DRAW_CHUNK, len(auth))
+        descending = np.flatnonzero(auth[first:last] < auth[first - 1:last - 1]) + first
+        if len(descending):
+            positions = np.searchsorted(offsets, descending)
+            if np.any(offsets[positions] != descending):
+                raise ValueError("Each auth_starts run must be sorted in nondecreasing order.")
+    return offsets
+
+
+def _partitioned_equal_collisions(originals, auth, background, offsets):
+    """Exactly sort bounded time partitions of group-contiguous schedules.
+
+    Only local timestamp/index arrays (at most _COLLISION_SORT_CHUNK frames)
+    are sorted. Input authentication times may be a disk-backed array. Each
+    run is sorted already, so selecting a time partition uses binary searches
+    rather than scanning all fragments for every partition. Oversized bins are
+    bisected; arbitrarily many identical starts are flagged without sorting.
+
+    Equal-duration intervals need only adjacent sorted comparisons. Therefore
+    connecting the last frame of one partition to the first of the next gives
+    exactly the global-sort result, with no temporal halo or approximation.
+    Resident storage is the returned boolean mask, O(number of groups) run
+    metadata, sorted originals/background, and bounded local sort workspace.
+    """
+    parts = (originals, auth, background)
+    bases = (0, len(originals), len(originals) + len(auth))
+    collisions = np.zeros(sum(map(len, parts)), dtype=np.bool_)
+    if not len(collisions):
+        return collisions
+    auth_min = auth[offsets[:-1]]
+    auth_max = auth[offsets[1:] - 1]
+    others = []
+    for part, base in ((originals, bases[0]), (background, bases[2])):
+        order = np.argsort(part, kind="stable")
+        others.append((part[order], order, base))
+    previous = None
+
+    def connect(first_time, first_index, last_time, last_index):
+        nonlocal previous
+        if previous is not None:
+            previous_time, previous_index = previous
+            endpoint = previous_time + FRAME_S
+            endpoint -= 4 * np.spacing(max(abs(endpoint), abs(first_time)))
+            if first_time < endpoint:
+                collisions[previous_index] = True
+                collisions[first_index] = True
+        previous = (last_time, last_index)
+
+    def visit(lower, upper):
+        # All intervals are [lower, upper); an infinite final upper bound keeps
+        # a frame exactly at the horizon without rounding its timestamp.
+        selected = np.flatnonzero((auth_min < upper) & (auth_max >= lower))
+        slices = []
+        for run in selected:
+            run_first, run_last = int(offsets[run]), int(offsets[run + 1])
+            run_times = auth[run_first:run_last]
+            first = run_first + int(np.searchsorted(run_times, lower, side="left"))
+            last = run_first + int(np.searchsorted(run_times, upper, side="left"))
+            if first < last:
+                slices.append((auth, None, bases[1], first, last))
+        for values, order, base in others:
+            first = int(np.searchsorted(values, lower, side="left"))
+            last = int(np.searchsorted(values, upper, side="left"))
+            if first < last:
+                slices.append((values, order, base, first, last))
+        count = sum(last - first for _, _, _, first, last in slices)
+        if not count:
+            return
+        minimum = min(float(values[first]) for values, _, _, first, _ in slices)
+        maximum = max(float(values[last - 1]) for values, _, _, _, last in slices)
+        if count > _COLLISION_SORT_CHUNK:
+            if minimum != maximum:
+                midpoint = minimum + (maximum - minimum) / 2
+                if midpoint <= minimum:
+                    midpoint = float(np.nextafter(minimum, maximum))
+                visit(lower, midpoint)
+                visit(midpoint, upper)
+                return
+            # Identical starts overlap only if adding the frame duration still
+            # exceeds the four-ULP boundary tolerance at this magnitude.
+            endpoint = minimum + FRAME_S
+            overlap = minimum < endpoint - 4 * np.spacing(endpoint)
+            first_index = last_index = None
+            for _, order, base, first, last in slices:
+                if order is None:
+                    if overlap:
+                        collisions[base + first:base + last] = True
+                    left, right = base + first, base + last - 1
+                else:
+                    if overlap:
+                        collisions[base + order[first:last]] = True
+                    left, right = base + int(order[first]), base + int(order[last - 1])
+                if first_index is None:
+                    first_index = left
+                last_index = right
+            connect(minimum, first_index, maximum, last_index)
+            return
+        times = np.empty(count, dtype=np.float64)
+        indices = np.empty(count, dtype=np.int64)
+        position = 0
+        for values, order, base, first, last in slices:
+            following = position + last - first
+            times[position:following] = values[first:last]
+            if order is None:
+                indices[position:following] = np.arange(base + first, base + last)
+            else:
+                indices[position:following] = base + order[first:last]
+            position = following
+        order = np.argsort(times, kind="stable")
+        ordered = times[order]
+        endpoints = ordered[:-1] + FRAME_S
+        endpoints -= 4 * np.spacing(np.maximum(np.abs(endpoints), np.abs(ordered[1:])))
+        overlaps = ordered[1:] < endpoints
+        collisions[indices[order[:-1][overlaps]]] = True
+        collisions[indices[order[1:][overlaps]]] = True
+        connect(float(ordered[0]), int(indices[order[0]]),
+                float(ordered[-1]), int(indices[order[-1]]))
+
+    # Bound the number of top-level partitions even for a large arbitrary time
+    # domain; recursive splitting still enforces the local sort-size bound.
+    maxima = [float(np.max(part)) for part in parts if len(part)]
+    maximum = max(maxima)
+    step = max(_COLLISION_BUCKET_S, maximum / 4096)
+    count_bins = max(1, int(math.ceil(maximum / step)))
+    for bucket in range(count_bins):
+        visit(bucket * step, (bucket + 1) * step if bucket + 1 < count_bins else math.inf)
+    return collisions
+
+
+def _observed_cross_collisions(targets, observed, durations, masks):
+    """OR variable-duration interference into equal-duration target masks.
+
+    A target overlaps an earlier observed event iff its start is less than the
+    maximum earlier adjusted endpoint. It overlaps a later event iff the next
+    observed start precedes its own adjusted endpoint. Equality places targets
+    before observed events, matching the stable concatenated reference sort.
+    """
+    if not len(observed):
+        return
+    order = np.argsort(observed, kind="stable")
+    ordered = observed[order]
+    prefix_ends = ordered + durations[order]
+    prefix_ends -= 4 * np.spacing(prefix_ends)
+    np.maximum.accumulate(prefix_ends, out=prefix_ends)
+    for starts, result in zip(targets, masks):
+        for first in range(0, len(starts), _DRAW_CHUNK):
+            times = starts[first:first + _DRAW_CHUNK]
+            following = np.searchsorted(ordered, times, side="left")
+            earlier = following > 0
+            flags = np.zeros(len(times), dtype=np.bool_)
+            flags[earlier] = times[earlier] < prefix_ends[following[earlier] - 1]
+            later = following < len(ordered)
+            ends = times + FRAME_S
+            ends -= 4 * np.spacing(ends)
+            flags[later] |= ordered[following[later]] < ends[later]
+            result[first:first + len(times)] |= flags
+
+
+def _target_collision_masks(originals, auth, background, observed, durations, offsets=None):
+    if offsets is None:
+        # Small existing callers retain their inexpensive global equal-length
+        # sort. The full replay supplies run offsets for bounded-memory sorting.
+        combined = _collision_mask(np.concatenate((originals, auth, background)))
+    else:
+        combined = _partitioned_equal_collisions(originals, auth, background, offsets)
+    original_mask = combined[:len(originals)]
+    auth_mask = combined[len(originals):len(originals) + len(auth)]
+    _observed_cross_collisions((originals, auth), observed, durations, (original_mask, auth_mask))
+    return original_mask, auth_mask
+
+
 def evaluate_channel(
     original_starts, original_aircraft, auth_starts, auth_aircraft=None, *,
     loss: dict, seed: int, horizon: float, channel_mode: str = "destructive_overlap",
     background_frames_per_second: float = 0.0,
     observed_starts=None, observed_durations_s=None,
+    auth_run_offsets=None,
 ) -> dict:
     """Return paired, input-order reception and attribution NumPy boolean masks.
 
@@ -223,6 +410,10 @@ def evaluate_channel(
     scenarios, and must not duplicate retained original frames. Their durations
     may differ, including short replies. Counts and full-envelope offered airtime
     are reported when supplied; airtime is a sum, not overlap-adjusted occupancy.
+
+    ``auth_run_offsets`` optionally partitions authentication input into
+    contiguous nonempty sorted runs (the last offset equals its length). This
+    enables bounded-memory collision sorting without changing reception results.
     """
     horizon = _number(horizon, "horizon")
     background_rate = _number(background_frames_per_second, "background_frames_per_second")
@@ -233,6 +424,7 @@ def evaluate_channel(
         raise ValueError("channel_mode must be independent or destructive_overlap.")
     originals = _starts(original_starts, "original_starts", horizon)
     auth = _starts(auth_starts, "auth_starts", horizon)
+    offsets = _auth_runs(auth, auth_run_offsets) if auth_run_offsets is not None else None
     observed_supplied = observed_starts is not None or observed_durations_s is not None
     if (observed_starts is None) != (observed_durations_s is None):
         raise ValueError("observed_starts and observed_durations_s must be supplied together.")
@@ -261,19 +453,13 @@ def evaluate_channel(
         original_collisions = np.zeros(count_original, dtype=np.bool_)
         auth_collisions = np.zeros(count_auth, dtype=np.bool_)
     else:
-        def collisions_for(targets):
-            if not len(observed):
-                return _collision_mask(np.concatenate((*targets, background)))
-            starts = np.concatenate((*targets, background, observed))
-            durations = np.full(len(starts), FRAME_S, dtype=np.float64)
-            durations[-len(observed):] = observed_durations
-            return _variable_collision_mask(starts, durations)
-
-        baseline_collisions = collisions_for((originals,))[:count_original].copy()
+        baseline_collisions, _ = _target_collision_masks(
+            originals, np.empty(0), background, observed, observed_durations,
+        )
         if count_auth:
-            combined = collisions_for((originals, auth))
-            original_collisions = combined[:count_original].copy()
-            auth_collisions = combined[count_original:count_original + count_auth].copy()
+            original_collisions, auth_collisions = _target_collision_masks(
+                originals, auth, background, observed, observed_durations, offsets,
+            )
         else:
             original_collisions = baseline_collisions.copy()
             auth_collisions = np.zeros(0, dtype=np.bool_)
@@ -350,6 +536,7 @@ def evaluate_shifted_channel(
     loss: dict, seed: int, horizon: float, channel_mode: str = "destructive_overlap",
     observed_starts=None, observed_durations_s=None,
     background_frames_per_second: float = 0.0,
+    auth_run_offsets=None,
 ) -> dict:
     """Compare a recorded baseline with originals delayed by the sender model.
 
@@ -368,6 +555,9 @@ def evaluate_shifted_channel(
     timing changes, and authentication interference, not authentication collisions
     alone. Observed non-target events and synthetic background remain identical.
     No input array is mutated.
+
+    Optional ``auth_run_offsets`` has the same meaning as in ``evaluate_channel``
+    and permits disk-backed group schedules without a full timestamp/index sort.
     """
     # Reuse the established validation, baseline, and seeded environment inputs.
     # With no authentication input, evaluate_channel sorts the baseline only once.
@@ -389,6 +579,7 @@ def evaluate_shifted_channel(
     if np.any(shifted[transmitted] < 0) or np.any(shifted[transmitted] > horizon):
         raise ValueError("Finite augmented_original_starts must lie within [0, horizon].")
     auth = _starts(auth_starts, "auth_starts", horizon)
+    offsets = _auth_runs(auth, auth_run_offsets) if auth_run_offsets is not None else None
     parameters = baseline["summary"]["loss"]
     transitions, initial_bad = _burst_environment(parameters, int(seed), horizon)
     # Never subset before drawing noise: doing so would change every later
@@ -402,17 +593,12 @@ def evaluate_shifted_channel(
     auth_collisions = np.zeros(len(auth), dtype=np.bool_)
     count_transmitted = int(np.count_nonzero(transmitted))
     if channel_mode == "destructive_overlap":
-        parts = (shifted[transmitted], auth, baseline["background_starts"])
-        observed = baseline.get("observed_starts")
-        if observed is not None and len(observed):
-            starts = np.concatenate((*parts, observed))
-            durations = np.full(len(starts), FRAME_S, dtype=np.float64)
-            durations[-len(observed):] = baseline["observed_durations_s"]
-            collisions = _variable_collision_mask(starts, durations)
-        else:
-            collisions = _collision_mask(np.concatenate(parts))
-        shifted_collisions[transmitted] = collisions[:count_transmitted]
-        auth_collisions = collisions[count_transmitted:count_transmitted + len(auth)].copy()
+        target_collisions, auth_collisions = _target_collision_masks(
+            shifted[transmitted], auth, baseline["background_starts"],
+            baseline.get("observed_starts", np.empty(0)),
+            baseline.get("observed_durations_s", np.empty(0)), offsets,
+        )
+        shifted_collisions[transmitted] = target_collisions
 
     baseline_success = baseline["original_success_baseline"]
     shifted_success = transmitted & ~(shifted_noise | shifted_collisions)

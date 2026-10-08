@@ -9,13 +9,14 @@ from unittest.mock import patch
 
 from src.experiment import signed_experiment as experiment
 from src.experiment.replay_artifacts import load_scenarios
+from src.experiment.signed_replay import simulate as real_simulate
 
 
 class SignedConfigurationTests(unittest.TestCase):
     def test_full_matrix_declares_deterministic_detached_rate_sensitivity(self):
         scenarios, seeds = load_scenarios(Path("config/signed_replay_scenarios.json"))
         self.assertEqual(seeds, [1])
-        self.assertEqual(len(scenarios), 6)
+        self.assertEqual(len(scenarios), 8)
         self.assertEqual({(s["parameters"]["channel_mode"], s["parameters"]["auth_frames_per_second"])
                           for s in scenarios},
                          {(mode, rate) for mode in ("independent", "destructive_overlap")
@@ -28,12 +29,21 @@ class SignedConfigurationTests(unittest.TestCase):
             self.assertEqual(parameters["loss"], {"kind": "iid", "probability": 0})
             self.assertEqual(parameters["receive_jitter_ms"], 0)
             self.assertEqual(parameters["background_frames_per_second"], 0)
-            self.assertEqual(parameters["receiver_workers"], 1)
+            self.assertEqual(parameters["receiver_workers"],
+                             4 if scenario["name"] == "detached_independent_r50_workers4" else 1)
+        by_name = {scenario["name"]: scenario for scenario in scenarios}
+        baseline = by_name["detached_independent_r50"]
+        parallel = by_name["detached_independent_r50_workers4"]
+        faster = by_name["detached_independent_r50_verify1ms"]
+        self.assertEqual(parallel["parameters"], {**baseline["parameters"], "receiver_workers": 4})
+        self.assertEqual(faster["parameters"], baseline["parameters"])
+        self.assertEqual(faster["receiver_profile"], "assumed_receiver_1ms")
         _, args = experiment.parse_args(["--trace", "trace", "--channel-trace", "channel",
                                          "--output-dir", "output"])
         self.assertEqual(args.scenarios, Path("config/signed_replay_scenarios.json"))
         self.assertEqual(args.intervals, [1, 5, 10, 20])
-        self.assertEqual(4 * len(args.intervals) * len(scenarios) * len(seeds), 96)
+        active = json.loads(Path("config/experiment.json").read_text())["algorithms"]
+        self.assertEqual(len(active) * len(args.intervals) * len(scenarios) * len(seeds), 96)
 
 
 @unittest.skipUnless(importlib.util.find_spec("cryptography"), "Actual ECDSA requires cryptography")
@@ -98,6 +108,61 @@ class SignedExperimentTests(unittest.TestCase):
                 patch("src.experiment.signed_replay.simulate", side_effect=AssertionError("must not replay")):
             experiment.run(self.args("--validate-only"))
         self.assertEqual(before, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.root.rglob("*") if p.is_file()})
+
+    def interrupted_run(self):
+        calls = 0
+        def interrupted(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise RuntimeError("test interruption")
+            return real_simulate(*args, **kwargs)
+        with patch("src.experiment.signed_replay.simulate", side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError, "test interruption"):
+                experiment.run(self.args())
+        self.assertFalse((self.root / "results/replay_summary.json").exists())
+        self.assertEqual(len(list((self.root / "results/cases").rglob("*.json"))), 2)
+
+    def test_interrupted_run_resumes_only_complete_matching_cases(self):
+        self.interrupted_run()
+        with patch("src.experiment.signed_replay.simulate", wraps=real_simulate) as replay:
+            experiment.run(self.args())
+        self.assertEqual(replay.call_count, 2)
+        report = json.loads((self.root / "results/replay_summary.json").read_text())
+        self.assertEqual(len(report["rows"]), 4)
+        experiment.run(self.args("--validate-only"))
+
+    def test_modified_checkpoint_is_rejected_before_replay(self):
+        self.interrupted_run()
+        path = next((self.root / "results/cases").rglob("*.json"))
+        document = json.loads(path.read_text())
+        document["row"]["authenticated_messages"] += 1
+        path.write_text(json.dumps(document))
+        with patch("src.experiment.signed_replay.simulate") as replay:
+            with self.assertRaisesRegex(ValueError, "checkpoint.*altered"):
+                experiment.run(self.args())
+        replay.assert_not_called()
+
+    def test_changed_analysis_context_does_not_reuse_old_checkpoints(self):
+        self.interrupted_run()
+        args = self.args()
+        args.analysis_context = {"mode": "conditional_recorded_timing", "limitations": ["test assumption"]}
+        with patch("src.experiment.signed_replay.simulate", wraps=real_simulate) as replay:
+            experiment.run(args)
+        self.assertEqual(replay.call_count, 4)
+        report = json.loads((self.root / "results/replay_summary.json").read_text())
+        self.assertEqual(report["provenance"]["analysis_context"], args.analysis_context)
+        self.assertNotIn("analysis_context", report["parameters"])
+
+    def test_checkpoint_cannot_be_reused_with_different_signed_workload_identity(self):
+        self.interrupted_run()
+        for path in (self.root / "results/cases").rglob("*.json"):
+            document = json.loads(path.read_text())
+            document.pop("checkpoint_sha256")
+            document["identity"]["signed_workload"]["groups_sha256"] = "altered"
+            experiment._save_case(path, document)
+        with self.assertRaisesRegex(ValueError, "checkpoint.*stale"):
+            experiment.run(self.args())
 
     def test_detached_replay_is_labeled_and_seed_independent_with_cached_signatures(self):
         self.parameters.update(replay_model="signed_detached", max_batch_wait_s=None)

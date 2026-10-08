@@ -20,6 +20,8 @@ __pycache__/
 # Original recordings and generated results are distributed as research artifacts,
 # not silently committed as large Git files. Metadata and empty destinations stay visible.
 /data/*.jsonl
+/data/*.beast
+/data/*.beast.json
 /results/daytime/*
 !/results/daytime/.gitkeep
 /results/nighttime/*

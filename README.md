@@ -4,7 +4,9 @@
 
 An ordinary message is available to its receiver before authentication finishes. Signing retained copies does **not** hold the ordinary message. Ordinary messages and authentication fragments share each modeled aircraft's radio; an already transmitting fragment can delay an ordinary message.
 
-**Status:** the final daytime and nighttime recordings have not been added. There are no final study results in this checkout. Old development data, results, figures, paper drafts and instructions have been moved to local `trash/`, which is ignored by Git and is not needed by any command below.
+**Status:** The daytime experiment is complete: **96 replay cases**, covering **752,053 first-hour DF17 messages** from **798 aircraft**, with **3,042,735 real signatures** generated and verified across 12 algorithm/grouping workloads. Read the [completed daytime results and sensitivity report](results/daytime/report.md), browse the [figures](results/daytime/figures/), or inspect the [case metrics](results/daytime/figures/case_metrics.csv). Nighttime data has not been added. SLH-DSA remains excluded from full signing/replay; its report entry is an analytical size bound only.
+
+The daytime results are explicitly **conditional simulations**. The supplied pyModeS export does not preserve cross-burst receiver timing and skips Mode A/C frames. Supplied timestamps are assumed transmission times, and overlap losses are model sensitivity outputs rather than validated operational loss predictions. Acquisition limitations remain in the input manifest and replay provenance. Old development data, results, figures, paper drafts and instructions have been moved to local `trash/`, which is ignored by Git and is not needed by any command below.
 
 ## 1. Understand the layout
 
@@ -13,12 +15,12 @@ README.md                     This complete reproduction guide
 run_experiment.py             Run all steps, or select one step
 
 data/
-  daytime.jsonl               Your original daytime recording (add later)
+  daytime.jsonl               Supplied daytime export (conditional timing; see limitations)
   nighttime.jsonl             Your original nighttime recording (add later)
   manifest.json               Explicit recording times, source and observation domain
 
 config/
-  experiment.json             Input/output paths, grouping sizes and window lengths
+  experiment.json             Selected algorithms, paths, grouping sizes and window lengths
   algorithms.json             The four cryptographic implementations
   hardware_profiles.json      Sourced processing-time estimates and their limitations
   signed_replay_scenarios.json Radio rates, channel models and other assumptions
@@ -26,6 +28,7 @@ config/
 
 scripts/
   bootstrap_liboqs.sh          Install/check the native cryptographic library
+  00_capture.py               Preserve a raw receiver stream for a new recording
   01_prepare.py               Prepare inputs and draw cumulative traffic by DF
   02_sign.py                  Generate and verify the real signatures
   03_replay.py                Replay the signed workloads under all scenarios
@@ -150,7 +153,47 @@ The current adapter accepts one Mode S frame per nonempty JSONL line:
 
 `timestamp` is numeric seconds in the declared time system. `raw_msg` is exactly 14 hexadecimal characters for a short frame or 28 for a long frame. Optional integer `df` and DF17 `icao` fields must agree with the encoded bits. The adapter derives DF and the DF17 address when absent. Every supplied DF is retained, including DF0, DF4, DF11, DF17, DF20 and DF21; only first-hour DF17 frames are signing targets.
 
-**The actual acquisition format has not yet been inspected.** If its fields differ, add an explicit adapter preserving the original recording and its provenance before running step 01. Unsupported or malformed rows currently stop preparation, rather than silently removing channel interference. This adapter does not handle undecoded RF pulses or non-Mode-S formats, check CRCs, or deduplicate observations from multiple receivers. Those acquisition properties must be documented; recorded frames do not prove that every real-world 1090 MHz transmission was captured.
+The supplied daytime export matches this JSONL schema, but its timestamps failed the acquisition audit described in `results/daytime/input_audit.json`. Schema compatibility alone does not establish usable radio timing. For future formats, add an explicit adapter preserving the original recording and its provenance before running step 01. Unsupported or malformed rows currently stop preparation, rather than silently removing channel interference. This adapter does not handle undecoded RF pulses or non-Mode-S formats, check CRCs, or deduplicate observations from multiple receivers. Those acquisition properties must be documented; recorded frames do not prove that every real-world 1090 MHz transmission was captured.
+
+### Current daytime capture: conditional simulation
+
+The original command was:
+
+```bash
+uvx --with pyModeS modes live --network airsquitter.lr.tudelft.nl:10004 --dump-to daytime.jsonl
+```
+
+The matching cached pyModeS 3.6.0 implementation re-anchors each TCP burst to the computer's wall clock, discards original receiver counters in the JSONL export, and skips Mode A/C replies. [Network-reader source](https://github.com/junzis/pyModeS/blob/main/src/pyModeS/cli/_source.py). The local audit stores the exact source hashes and version evidence. This affects cross-burst radio timing, even though individual JSONL timestamps contain many decimal places. Sorting cannot recover the omitted receiver counters.
+
+The issue is varying delay between network batches, not a constant delay through the VPN. For example, consider two modeled 120-microsecond frames that really start 250 microseconds apart: they do not overlap. If separate batch-clock adjustments make their recorded starts appear only 100 microseconds apart, the replay would infer an overlap that did not occur. This is an illustration, not a measurement of this recording's timing error. Accurate spacing within a batch does not restore the missing spacing between batches.
+
+The file remains useful for recorded DF counts, message contents and the signing workload. The current simulation uses its supplied timestamps as an explicit assumption; the resulting collision percentages do not establish what would happen when adding signatures to the original radio timeline. Step 01 also produces the cumulative figure. The acquisition concerns remain in `experiment_blockers` in `data/manifest.json`. The default `analysis_mode` in `config/experiment.json` is explicitly `conditional_recorded_timing`, which permits this scoped simulation and carries these limitations into the saved replay identity and labeled report. Setting it to `validated_recording` prevents replay while those acquisition concerns remain. Neither mode changes the raw observations or repairs missing receiver timing. Inspect [the window report](results/daytime/report.md) and [the timing audit](results/daytime/input_audit.json). These local generated files are not included in a code-only clone.
+
+### Preserve original receiver timing in a new recording
+
+If the original raw Beast stream is available, preserve it: it may avoid another recording. Otherwise, connect to the TU Delft VPN and run this **instead of the decoded JSONL dump**:
+
+```bash
+python scripts/00_capture.py --output data/daytime_receiver.beast
+```
+
+This records unmodified bytes from `airsquitter.lr.tudelft.nl:10004` for **4,260 seconds (71 minutes)**, plus a `.beast.json` metadata sidecar. The extra minute provides acquisition padding; the experiment still selects exactly 60 minutes plus 10 minutes of follow-up. The recorder never overwrites an existing file. Interrupted, disconnected or empty captures are marked incomplete. It does not filter receiver frame types or substitute computer-clock timestamps for receiver counters.
+
+The recorder preserves only what the receiver exports; it cannot guarantee that Mode A/C export is enabled, recover undecoded RF energy, or establish complete physical spectrum occupancy. The sidecar's host start/end clocks describe the network recording, not individual RF reception times. After capture, receiver-counter units, wraps/resets, available frame types and 70-minute coverage must be checked before conversion to experiment JSONL. The current preparation adapter does **not** directly ingest `.beast` files; that conversion must preserve relative receiver timing and observed interference. No new receiver recording has been started automatically.
+
+### Check computational resources before signing
+
+After preparation, reproduce the allocation-free resource diagnostic:
+
+```bash
+python -m src.experiment.resource_preflight --window daytime
+```
+
+It saves `results/daytime/01_prepared/resource_preflight.json`, including frame/event bounds and estimated public-cache size. It reads installed backend metadata but does not create keys/signatures or run the scientific replay. Optional `host_benchmark.json` contains a short diagnostic probe; extrapolations from it are host-runtime estimates, not airborne benchmark results. The diagnostic is allowed for a blocked recording, with that limitation stated in its output.
+
+SLH-DSA is temporarily excluded from the active experiment. The former 20-million-event limit was an implementation guard, not an ADS-B requirement. It has been raised to **200 million events per case**; the current resource calculation bounds all 96 cases below that guard (largest upper bound: **156,867,457 events**). The completed run's largest case actually processed **156,758,731 events**, without truncating the workload. This is a simulator capacity issue, not evidence by itself of an airborne limitation.
+
+A short host probe estimates approximately **1.04 hours of serial signing alone**, excluding verification, file handling and replay; the public signature caches require approximately **3.65–4.59 GiB** before other files. These diagnostic estimates are not the measured duration of the completed experiment or a promise of total runtime. A new capture still needs this check. Signing uses bounded parallel workers and durable completed-aircraft checkpoints. Replay uses compact transmission schedules, disk-backed large timelines, bounded collision calculations and completed-case checkpoints. The guard alone is not a memory or runtime guarantee. Simulation cases run sequentially to limit peak memory.
 
 ## 4. Run the experiment
 
@@ -173,7 +216,7 @@ Alternatively, process both recordings and their comparison in one command:
 python run_experiment.py --window both
 ```
 
-Both input files are checked before a combined run starts. There is no automatic fallback to sample data. Completed signed workloads are checked and reused. The current signing builder is serial: a completed workload is reusable, but an interrupted unfinished workload starts again. Full SLH-DSA signing can be expensive; the time spent running this computer is distinct from the modeled aircraft processing time.
+Both input files are checked before a combined run starts. There is no automatic fallback to sample data. Completed signed workloads are checked and reused. Signing uses up to four worker processes. Completed aircraft checkpoints are verified and reused after interruption; only an incomplete aircraft must restart. Private keys are never saved. Set `ADSB_SIGNING_WORKERS=2` before a command to reduce signing concurrency. Replay saves each completed case atomically, validates its inputs and signatures on restart, and reuses matching cases. It publishes a complete replay report only when the requested matrix is finished. Only the algorithms selected in `config/experiment.json` participate. SLH-DSA is implemented and covered by cryptographic tests, but temporarily omitted from the active experiment. The time spent running this computer is distinct from the modeled aircraft processing time.
 
 ### Run and inspect each numbered step separately
 
@@ -208,18 +251,22 @@ results/daytime/
   03_replay/
     replay_summary.json        Full metrics, configuration and provenance
     replay_overview.csv        One row per experimental case
+    cases/                     Atomic completed-case checkpoints for resuming
   figures/                     PNG, PDF, SVG and underlying metric tables
-  report.md                    Figure gallery and interpretation notes
+  report.md                    Results and sensitivity tables, then the figure gallery
 ```
 
-The same paths exist for nighttime. The report contains factual summaries and links to the figures; final paper conclusions require review of the actual results and model assumptions. A missing authentication delay is not zero: it means there were no eligible completed observations for that metric.
+The same paths exist for nighttime. The report contains matched results and sensitivity tables, factual summaries, and links to the figures; final paper conclusions require review of the actual results and model assumptions. A missing authentication delay is not zero: it means there were no eligible completed observations for that metric.
+
+For the completed daytime run, [authentication outcomes](results/daytime/figures/authentication_outcomes.csv) account for every source message, including authenticated messages, unsigned final groups, reception or association failures, and work still pending at the cutoff. [Deadline measurements](results/daytime/figures/authentication_deadlines.csv) include their eligible and excluded population counts. Use these alongside [case metrics](results/daytime/figures/case_metrics.csv) when interpreting delay: fast authentication among a few successful messages does not imply high overall coverage.
 
 | Figure family | What it shows |
 | --- | --- |
 | `01_traffic_by_df` | Cumulative frame counts and cumulative encoded message bytes, separately for every observed DF over all 70 minutes; a marker separates the first hour and follow-up. Bytes include message parity, exclude the preamble, and are not JSON file size or RF airtime. |
-| `02_signature_cost` | Actual signature sizes and required authentication fragment counts, for every algorithm and grouping size. |
+| `02_signature_cost` | Actual signature sizes and required authentication fragment counts, for every active algorithm and grouping size. |
+| `02_signature_airtime_lower_bound` | Optimistic signature-only airtime with seven payload bytes per frame and no metadata/header overhead. Active algorithms use real signature lengths; SLH is shown separately as an analytical size bound, with no full signing or replay claim. |
 | `03_channel_load` | Recorded baseline load, added traffic actually transmitted, and total authentication demand, for every algorithm/grouping/rate/channel case. Offered airtime sums frame durations and can exceed 100% under overlap; it is not measured spectrum occupancy. |
-| `04_ordinary_delivery` | Modeled baseline and augmented transmission-failure percentages, additional failures attributable to authentication, and ordinary transmission delay. Denominators are labeled in the figures and CSVs. |
+| `04_ordinary_delivery` | Modeled baseline and augmented transmission-failure percentages, additional failures attributable to authentication, and authentication-added ordinary transmission delay versus the same radio carrying ordinary messages only. Total delay and baseline radio queueing remain in the CSV. Denominators are labeled in the figures and CSVs. |
 | `05_authentication_deadlines` | Fraction authenticated within each specified delay, measured from source availability and separately from ordinary reception. Eligible/excluded counts accompany the percentages. |
 | `06_backlog` | Signing, authentication transmission and receiver work still unfinished, including backlog over time. Sampling is explicitly discrete, not a continuously observed queue trace. |
 | `07_window_comparison` | Matched daytime/nighttime differences under the same configuration; this appears in `results/comparison/`. |
@@ -265,19 +312,20 @@ The tests cover actual signatures, modified-message rejection, fragment reconstr
 
 Keys and some signatures use cryptographic randomness; Falcon signature lengths can vary. Therefore fresh signing reproduces the procedure but need not reproduce identical numbers from a frozen signature cache. The replay's compatibility seed does not control key generation or signing randomness. Private keys are never stored in the main signed cache.
 
-Raw JSONL files, generated results and `trash/` are ignored by Git. When publishing the paper, distribute the recordings (subject to their redistribution terms), public signed caches, final results and checksums as a versioned research artifact, with an actual download link and source revision recorded here. **No final dataset or artifact download is available yet.** A code clone alone cannot reproduce data that has not been released or acquired.
+Raw JSONL files, generated results and `trash/` are ignored by Git. Keep any in-progress `02_signed/` checkpoint directories and `03_replay/` case checkpoints when resuming the same command; deleting them discards reusable work. When publishing the paper, distribute the recordings (subject to their redistribution terms), public signed caches, final results and checksums as a versioned research artifact, with an actual download link and source revision recorded here. **No final dataset or artifact download is available yet.** A code clone alone cannot reproduce data that has not been released or acquired.
 
 ## 7. Experimental settings and interpretation
 
-The default matrix is **4 algorithms × 4 grouping sizes × 3 authentication rates × 2 channel models = 96 cases per window**, or 192 for both. The 16 signed workloads per window are reused across their six radio/channel cases.
+The main matrix is **3 algorithms × 4 grouping sizes × 3 authentication rates × 2 channel models = 72 cases per window**. Two extra receiver-capacity scenarios each cover all 12 algorithm/grouping combinations: collision-free at 50 authentication frames/s with either four reference-speed verification workers or one assumed 1 ms worker. This adds **24 sensitivity cases**, giving **96 total per window**, or 192 for both. Each of the 12 signed workloads is reused across eight scenarios. The `algorithms` list in `config/experiment.json` selects this subset; it applies consistently to signing, replay, resource diagnostics and reports. SLH-DSA is temporarily excluded from signing/replay, with no placeholder signatures or simulated SLH results substituted. The report also calculates an explicitly analytical signature-only airtime bound from its fixed 7,856-byte size ([FIPS 205, Table 2](https://nvlpubs.nist.gov/nistpubs/fips/nist.fips.205.pdf)); this does not add SLH to the replay case matrix. To restore it, add `"SLH-DSA-SHA2-128s"` to that list before starting a new run, then repeat the resource diagnostic. Changing the selection changes the study identity, so an existing completed inventory is not silently treated as the new study.
 
-- Algorithms: ECDSA P-256, ML-DSA-44, Falcon-512 and SLH-DSA-SHA2-128s. The historical code label `FN-DSA-512` selects Falcon-512; it is not a claim of a finalized FN-DSA implementation. The parameter sets do not all represent the same security category.
+- Active algorithms: ECDSA P-256, ML-DSA-44 and Falcon-512. SLH-DSA-SHA2-128s remains available for a later run. The historical code label `FN-DSA-512` selects Falcon-512; it is not a claim of a finalized FN-DSA implementation. The parameter sets do not all represent the same security category.
 - Group sizes: `k = 1, 5, 10, 20`, independently per aircraft. Groups close only at exactly `k` messages, with no time-based flush. Incomplete final groups remain unsigned; their ordinary messages still transmit.
 - Authentication fragments: an illustrative seven-byte ME allocation, with four header bytes and three data bytes per fragment. Signed metadata also consumes space. No approved ADS-B extension or assigned message type is claimed.
 - Rates: 10, 50 and 100 authentication frames/second/aircraft. These are sensitivity settings, not authorized transmission rates or measured channel capacities.
-- Processing: one serial signer per aircraft and one shared receiver verification worker. Source timestamps proxy message availability, not measured sensor-generation time. Published hardware-profile service estimates drive replay; offline host execution time does not.
+- Processing: one serial signer per aircraft and one shared receiver verification worker in the main matrix. Receiver sensitivity additionally tests four reference-speed workers and one assumed 1 ms worker at 50 frames/s in the collision-free model. The 1 ms value is an analyst assumption, not a measured receiver benchmark. Source timestamps proxy message availability, not measured sensor-generation time. Published hardware-profile service estimates drive replay; offline host execution time does not.
 - Hardware evidence: `config/hardware_profiles.json` stores source URLs, platform details and equivalence limitations for every algorithm. The defaults combine embedded reference measurements; Falcon and SLH-DSA include implementation-lineage proxies. They are not a measured common avionics or ground-receiver platform and do not establish worst-case execution times.
 - Coverage: observed traffic throughout 70 minutes; a cold start with empty queues, first-hour target cohort, and a fixed observation cutoff. Authentication for messages outside the target cohort is not generated. This is not an indefinitely running steady-state simulation.
+- Local radio scheduling: first-hour target DF17 messages share each modeled aircraft's transmitter with authentication fragments. Other recorded frames, including later DF17 traffic and Mode S replies, remain fixed interference. Their transmissions are not rescheduled through the same aircraft's radio, so the added-delay result does not represent full transponder arbitration.
 - Loss: recorded interference plus either destructive overlap or a collision-free control. Random erasure and receive jitter are zero. The single seed retained for compatibility is not a stochastic replication or an uncertainty estimate.
 - Trust and resources: provisioned public keys/session, shared time assumptions, no credential distribution traffic, no feedback retransmission, and unbounded default signing/transmission/verification queues. Backlog measures required work; it does not prove sufficient onboard memory, power or certification suitability.
 

@@ -1,7 +1,13 @@
 {
   "schema_version": 1,
+  "analysis_mode": "conditional_recorded_timing",
   "data_manifest": "data/manifest.json",
   "algorithms_config": "config/algorithms.json",
+  "algorithms": [
+    "ECDSA-P256",
+    "ML-DSA-44",
+    "FN-DSA-512"
+  ],
   "hardware_profiles": "config/hardware_profiles.json",
   "scenarios": "config/signed_replay_scenarios.json",
   "intervals": [

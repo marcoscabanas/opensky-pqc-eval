@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 import heapq
 import math
 import random
+from pathlib import Path
+import tempfile
+import time
 
 import numpy as np
 
@@ -20,7 +23,7 @@ from .hardware_profiles import timing_samples_ms
 from .model_support import FRAME_S, _number, _quantiles, form_groups
 from .replay_transport import (
     FragmentReassembler, ReplayReceiver, encode_envelope, fragment_count,
-    fragment_envelope,
+    fragment_envelope, message_tag, _time_us,
 )
 from .shared_channel import evaluate_shifted_channel
 from .signed_workload import verifier_for
@@ -44,7 +47,7 @@ ASSUMPTIONS = [
 ]
 
 
-@dataclass
+@dataclass(slots=True)
 class Group:
     source: dict
     members: tuple
@@ -80,6 +83,60 @@ class Group:
     @property
     def formed(self):
         return self.source["formed_s"]
+
+
+_ARRAY_CHUNK = 1_000_000
+_MEMMAP_THRESHOLD = 8_000_000
+
+
+class _ReplayReceiver(ReplayReceiver):
+    """Avoid scanning retained observations when expiry is provably impossible.
+
+    Reception timestamps are validated as nonnegative. With the study's
+    horizon-wide retention, the earliest permissible observation remains at or
+    before zero throughout the replay, so filtering cannot remove any item.
+    Short-retention uses still take the general receiver's expiry path.
+    """
+
+    def observe_message(self, raw, reception_s):
+        tag, reception_us = message_tag(raw), _time_us(reception_s)
+        if reception_us - self.max_age_us - self.clock_tolerance_us <= 0:
+            self.observations[raw[1:4].hex().upper()].append((reception_us, raw, tag))
+        else:
+            super().observe_message(raw, reception_s)
+
+
+def _radio_run(first, count, step, horizon):
+    """Keep arithmetic runs compact instead of retaining one float per frame."""
+    while count and first + (count - 1) * step > horizon:
+        count -= 1
+    return first, count, step
+
+
+def _array_buffer(count, scratch, name):
+    if count >= _MEMMAP_THRESHOLD:
+        return np.memmap(Path(scratch) / name, mode="w+", dtype=np.float64, shape=(count,))
+    return np.empty(count, dtype=np.float64)
+
+
+def _flatten_radio(groups, count, scratch):
+    """Expand exact scheduled runs once, with bounded transient allocations."""
+    times = _array_buffer(count, scratch, "authentication-times.dat")
+    offsets, offset = [], 0
+    for group in groups:
+        group.offset = offset
+        if group.sent:
+            offsets.append(offset)
+        for first, length, step in group.chunks:
+            for begin in range(0, length, _ARRAY_CHUNK):
+                size = min(length - begin, _ARRAY_CHUNK)
+                # Retain first + index * step evaluation, including rounding.
+                times[offset:offset + size] = first + np.arange(begin, begin + size, dtype=float) * step
+                offset += size
+        group.chunks.clear()
+    if offset != count:
+        raise RuntimeError("Authentication schedule frame count is inconsistent.")
+    return times, np.asarray([*offsets, count], dtype=np.int64)
 
 
 def _schedule_radio(groups, original_starts, parameters, horizon, budget):
@@ -139,18 +196,17 @@ def _schedule_radio(groups, original_starts, parameters, horizon, budget):
                     count -= 1
             if sent_total + count > budget:
                 raise RuntimeError("Signed replay max_events exceeded; no partial result may be published.")
-            times = first + np.arange(count, dtype=float) * step
-            # Protect floating-point horizon boundaries without inventing time.
-            times = times[times <= horizon]
-            if not len(times):
+            first, count, step = _radio_run(first, count, step, horizon)
+            if not count:
                 break
-            group.chunks.append(times)
-            group.sent += len(times)
-            sent_total += len(times)
-            group.tx_start = min(group.tx_start, float(times[0]))
+            group.chunks.append((first, count, step))
+            group.sent += count
+            sent_total += count
+            group.tx_start = min(group.tx_start, first)
             group.state = "pending_transmission"
-            now = float(times[-1]) + FRAME_S
-            gate = float(times[-1]) + step
+            last = first + (count - 1) * step
+            now = last + FRAME_S
+            gate = last + step
             if group.sent == group.fragments * copies:
                 group.tx_end = now
                 group.state = "pending_reception"
@@ -222,17 +278,17 @@ def _schedule_detached_radio(groups, records, original_starts, parameters, horiz
                     count -= 1
             if sent_total + count > budget:
                 raise RuntimeError("Signed replay max_events exceeded; no partial result may be published.")
-            times = first + np.arange(count, dtype=float) * step
-            times = times[times <= horizon]
-            if not len(times):
+            first, count, step = _radio_run(first, count, step, horizon)
+            if not count:
                 break
-            group.chunks.append(times)
-            group.sent += len(times)
-            sent_total += len(times)
-            group.tx_start = min(group.tx_start, float(times[0]))
+            group.chunks.append((first, count, step))
+            group.sent += count
+            sent_total += count
+            group.tx_start = min(group.tx_start, first)
             group.state = "pending_transmission"
-            now = float(times[-1]) + FRAME_S
-            gate = float(times[-1]) + step
+            last = first + (count - 1) * step
+            now = last + FRAME_S
+            gate = last + step
             if group.sent == group.fragments * copies:
                 # A signer may finish during this last frame. Until that
                 # frame completes the active object still occupies a queue
@@ -266,9 +322,33 @@ def _detached_association_tolerance(records, receive_jitter_s):
     return maximum_reception_delay + receive_jitter_s + 1e-6
 
 
+def _ordinary_radio_without_auth(records):
+    """Use the same per-aircraft nonpreemptive FIFO radio without auth frames."""
+    available = defaultdict(float)
+    starts = np.empty(len(records), dtype=float)
+    for index, record in enumerate(records):
+        icao = record["icao"]
+        starts[index] = max(record["relative_time_s"], available[icao])
+        available[icao] = starts[index] + FRAME_S
+    return starts
+
+
 def simulate(trace, algorithm, interval, workload, sender_profile, receiver_profile,
              scenario, seed=1, *, channel_trace=None, replay_model="signed_before_send"):
+    """Replay exact signatures with per-case temporary disk-backed large arrays."""
+    with tempfile.TemporaryDirectory(prefix="adsb-replay-") as scratch:
+        return _simulate(trace, algorithm, interval, workload, sender_profile, receiver_profile,
+                         scenario, seed, channel_trace=channel_trace,
+                         replay_model=replay_model, scratch=scratch)
+
+
+def _simulate(trace, algorithm, interval, workload, sender_profile, receiver_profile,
+              scenario, seed=1, *, channel_trace=None, replay_model="signed_before_send", scratch):
     """Replay cached real signatures without regenerating them for each RF seed."""
+    started = time.monotonic()
+    def progress(message):
+        if len(trace) >= 100_000:
+            print(f"  REPLAY +{time.monotonic() - started:.0f}s: {message}", flush=True)
     if replay_model not in {"signed_before_send", "signed_detached"}:
         raise ValueError("Unknown signed replay model.")
     detached = replay_model == "signed_detached"
@@ -372,28 +452,46 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
     else:
         frame_total, peak_tx = _schedule_radio(groups, original_starts, p, horizon,
                                              p["max_events"] - fixed_events)
-    chunks, offset = [], 0
-    for group in groups:
-        group.offset = offset
-        chunks.extend(group.chunks)
-        group.chunks.clear()
-        offset += group.sent
-    auth_times = np.concatenate(chunks) if chunks else np.empty(0, dtype=float)
-    del chunks
+    progress(f"scheduled {frame_total:,} authentication frames")
+    # Group validation intermediates are no longer needed during RF/receiver work.
+    del expected, covered, by_id
+    auth_times, auth_run_offsets = _flatten_radio(groups, frame_total, scratch)
+    progress("authentication timeline ready")
     options = dict(loss=p["loss"], seed=seed, horizon=horizon, channel_mode=p["channel_mode"],
                    background_frames_per_second=p["background_frames_per_second"], **channel_options)
     aircraft = [record["icao"] for record in records]
-    channel = evaluate_shifted_channel(source_times, original_starts, aircraft, auth_times, **options)
+    channel = evaluate_shifted_channel(source_times, original_starts, aircraft, auth_times,
+                                       auth_run_offsets=auth_run_offsets, **options)
+    progress("augmented channel evaluated")
     timing_control = evaluate_shifted_channel(source_times, original_starts, aircraft, [], **options)
     reception_times = original_starts + FRAME_S + shared_jitter
     baseline = channel["original_success_baseline"] & (baseline_arrivals <= horizon)
     received = channel["original_success_with_auth"] & (reception_times <= horizon)
     control_received = timing_control["original_success_with_auth"] & (reception_times <= horizon)
-    auth_arrivals = auth_times + FRAME_S
+    # With zero jitter, retain a scalar arrival offset instead of duplicating a
+    # potentially gigabyte timeline. The receiver materializes only one group.
+    auth_arrivals, auth_arrival_offset = auth_times, FRAME_S
     if jitter:
-        auth_arrivals += np.random.default_rng(seed + 8011).uniform(0, jitter, len(auth_times))
-    auth_received = channel["auth_success"] & (auth_arrivals <= horizon)
-    receiver = ReplayReceiver(horizon + jitter + 1, association_tolerance)
+        auth_arrivals = _array_buffer(frame_total, scratch, "authentication-arrivals.dat")
+        jitter_rng = np.random.default_rng(seed + 8011)
+        for first in range(0, frame_total, _ARRAY_CHUNK):
+            last = min(first + _ARRAY_CHUNK, frame_total)
+            auth_arrivals[first:last] = auth_times[first:last] + FRAME_S
+            auth_arrivals[first:last] += jitter_rng.uniform(0, jitter, last - first)
+        auth_arrival_offset = 0.0
+    auth_received = channel["auth_success"].copy()
+    auth_lost_count = auth_in_flight_count = 0
+    for first in range(0, frame_total, _ARRAY_CHUNK):
+        last = min(first + _ARRAY_CHUNK, frame_total)
+        completed_auth = auth_arrivals[first:last] + auth_arrival_offset <= horizon
+        successful_auth = channel["auth_success"][first:last]
+        auth_received[first:last] &= completed_auth
+        auth_lost_count += int(np.count_nonzero(~successful_auth & completed_auth if declared_window
+                                                else ~successful_auth))
+        auth_in_flight_count += int(np.count_nonzero(~completed_auth if declared_window
+                                                     else successful_auth & ~completed_auth))
+    progress("channel controls complete; receiving exact signature fragments")
+    receiver = _ReplayReceiver(horizon + jitter + 1, association_tolerance)
     verifiers = {}
     try:
         for group in groups:
@@ -405,10 +503,12 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
                                   group.descriptor.session, verify)
         result = _receive(records, raw, groups, receiver, received, reception_times,
                           auth_arrivals, auth_received, p, horizon, rng_verify,
-                          verify_samples, fixed_events + frame_total)
+                          verify_samples, fixed_events + frame_total,
+                          auth_arrival_offset=auth_arrival_offset)
     finally:
         for verify in verifiers.values():
             verify.close()
+    progress("receiver cryptographic verification complete")
     auth_at, outcomes, diagnosed, receiver_stats, receiver_events = result
     tx_delays = original_starts - source_times
     metrics = summarize(records, baseline, received, reception_times, auth_at, outcomes,
@@ -424,11 +524,6 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
     rf_lost = transmitted & ~channel["original_success_with_auth"]
     if declared_window:
         rf_lost &= completed
-    auth_lost = ~channel["auth_success"]
-    auth_in_flight = channel["auth_success"] & (auth_arrivals > horizon)
-    if declared_window:
-        auth_lost &= auth_arrivals <= horizon
-        auth_in_flight = auth_arrivals > horizon
     known_withheld = np.array([outcome in {"unsigned_tail", "sender_queue_overflow"}
                                for outcome in outcomes]) & ~transmitted
     duration = end - start
@@ -436,7 +531,8 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
     followup = lambda times: np.isfinite(times) & ((times >= end) if declared_window else (times > end))
     observed_airtime = float(np.sum(observed_durations[capture(observed_starts)]))
     original_capture = int(np.count_nonzero(capture(original_starts)))
-    auth_capture = int(np.count_nonzero(capture(auth_times)))
+    auth_capture = sum(int(np.count_nonzero(capture(auth_times[first:first + _ARRAY_CHUNK])))
+                       for first in range(0, frame_total, _ARRAY_CHUNK))
     radio_waits = ([1000 * tx_delays[index] for index in np.flatnonzero(transmitted)] if detached else
                    [1000 * (original_starts[index] - group.sign_end)
                     for group in groups for index in group.members if transmitted[index]])
@@ -492,8 +588,8 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
         "authentication_only_additional_rf_loss_fraction": float((control_received & ~received).sum() / len(records)),
         "authentication_only_rf_reception_gain_messages": int((received & ~control_received).sum()),
         "auth_frames_transmitted": frame_total, "auth_frames_received": int(auth_received.sum()),
-        "auth_frames_lost": int(auth_lost.sum()),
-        "auth_frames_in_flight_at_horizon": int(auth_in_flight.sum()),
+        "auth_frames_lost": auth_lost_count,
+        "auth_frames_in_flight_at_horizon": auth_in_flight_count,
         "auth_frames_after_observation": frame_total - auth_capture,
         "actual_signature_bytes_total": sum(len(group.source["envelope"].signature) for group in groups),
         "signature_only_7byte_lower_bound_frames": sum(math.ceil(len(group.source["envelope"].signature) / 7)
@@ -527,6 +623,30 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
     }
     if channel_trace is not None:
         summary["observed_channel_trace"] = channel_trace["summary"]
+    if detached:
+        ordinary_control = _ordinary_radio_without_auth(records)
+        baseline_radio_waits = ordinary_control[transmitted] - source_times[transmitted]
+        added_radio_waits = original_starts[transmitted] - ordinary_control[transmitted]
+        tolerance = 8 * np.spacing(np.maximum(np.abs(original_starts[transmitted]),
+                                              np.abs(ordinary_control[transmitted])))
+        if np.any(added_radio_waits < -tolerance):
+            raise RuntimeError("Authentication radio schedule precedes its no-authentication FIFO control.")
+        # Roundoff-sized negative differences are zero delay. Larger negative
+        # differences above fail rather than conceal a scheduling inconsistency.
+        added_radio_waits = np.maximum(added_radio_waits, 0)
+        summary.update({
+            **_quantiles((1000 * baseline_radio_waits).tolist(), "baseline_ordinary_radio_queue_ms"),
+            **_quantiles((1000 * added_radio_waits).tolist(), "authentication_added_ordinary_delay_ms"),
+            "authentication_added_ordinary_delay_positive_messages": int(np.count_nonzero(added_radio_waits > tolerance)),
+            "ordinary_delay_control_cohort_messages": int(np.count_nonzero(transmitted)),
+            "ordinary_delay_control_basis": "same_per_aircraft_FIFO_radio_without_authentication_frames",
+        })
+        summary["metric_notes"].append(
+            "Authentication-added ordinary delay compares augmented transmission starts with a no-authentication "
+            "per-aircraft FIFO radio control, b_i=max(source_i,b_(i-1)+frame_duration), for the same transmitted "
+            "source occurrences. This removes ordinary queueing already caused by source-time ties or dense "
+            "arrivals. Both delay distributions condition on actually transmitted messages; unsent counts remain separate."
+        )
     summary["metric_notes"] += [
         ("Total baseline-to-augmented reception changes combine transmitter waiting, shifted transmission times, and authentication interference. The timing-matched control isolates authentication RF effects conditional on the same shifted target schedule." if detached else
          "Total baseline-to-augmented reception changes combine source withholding, shifted transmission times, and authentication interference. The timing-matched control isolates authentication RF effects conditional on the same shifted target schedule."),
@@ -573,7 +693,7 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
 
 def _receive(records, raw, groups, receiver, received, reception_times,
              auth_arrivals, auth_received, p, horizon, rng_verify, verify_samples,
-             previous_events):
+             previous_events, *, auth_arrival_offset=0.0):
     heap, serial = [], 0
     def schedule(time, priority, kind, value):
         nonlocal serial
@@ -586,14 +706,15 @@ def _receive(records, raw, groups, receiver, received, reception_times,
         if not group.sent:
             continue
         lo, hi = group.offset, group.offset + group.sent
-        arrivals = np.where(auth_received[lo:hi], auth_arrivals[lo:hi], np.inf)
+        physical_arrivals = auth_arrivals[lo:hi] + auth_arrival_offset
+        arrivals = np.where(auth_received[lo:hi], physical_arrivals, np.inf)
         if len(arrivals) % copies:
             arrivals = np.pad(arrivals, (0, copies - len(arrivals) % copies), constant_values=np.inf)
         logical_arrivals = arrivals.reshape(-1, copies).min(axis=1)
         group.received_fragments = int(np.isfinite(logical_arrivals).sum())
         finished_count = group.sent // copies
         if finished_count:
-            finishes = auth_arrivals[lo:lo + finished_count * copies].reshape(-1, copies).max(axis=1)
+            finishes = physical_arrivals[:finished_count * copies].reshape(-1, copies).max(axis=1)
             if np.any((finishes <= horizon) & ~np.isfinite(logical_arrivals[:finished_count])):
                 group.known_failure = "fragments_lost"
         if len(logical_arrivals) == group.fragments and np.all(np.isfinite(logical_arrivals)):

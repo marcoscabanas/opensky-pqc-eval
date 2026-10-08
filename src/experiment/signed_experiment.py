@@ -9,7 +9,10 @@ optional stochastic sensitivity studies.
 
 import argparse
 from contextlib import nullcontext
+import json
+import os
 from pathlib import Path
+import tempfile
 
 from src.experiment.channel_trace import load_channel_trace, validate_coverage, replay_window
 from src.experiment.model_support import validate_scenario
@@ -54,6 +57,36 @@ def _validate_rows(rows, scenarios, algorithms, intervals, seeds, count):
                 or row["verification_completed_groups"] != row["cryptographically_valid_groups"]
                 + row["invalid_signature_groups"]):
             raise ValueError("Signed replay authentication stages do not conserve groups.")
+
+
+def _load_case(path, identity):
+    """Accept only an intact case tied to current inputs, code and signed bytes."""
+    document = load_json(path)
+    checksum = document.pop("checkpoint_sha256", None)
+    if document.get("identity") != identity or checksum != _digest(document):
+        raise ValueError("Signed replay case checkpoint is stale or altered; use --force explicitly.")
+    if not isinstance(document.get("row"), dict) or not isinstance(document.get("assumptions"), list):
+        raise ValueError("Signed replay case checkpoint is malformed; use --force explicitly.")
+    return document
+
+
+def _save_case(path, document):
+    """Publish one complete case atomically so interruption preserves prior work."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = {**document, "checkpoint_sha256": _digest(document)}
+    staged = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=".case-", delete=False) as stream:
+            staged = Path(stream.name)
+            json.dump(document, stream, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(staged, path)
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
 
 
 def run(args):
@@ -108,6 +141,8 @@ def run(args):
     evidence["source_files_sha256"] = _source_evidence()
     parameters = {"algorithms": algorithms, "intervals": args.intervals,
                   "scenarios": scenarios, "seeds": seeds, "replay_model": model}
+    if getattr(args, "analysis_context", None) is not None:
+        evidence["analysis_context"] = args.analysis_context
     request = {"schema_version": SCHEMA_VERSION, "mode": "replay",
                "provenance": evidence, "parameters": parameters}
     request_hash = _digest(request)
@@ -159,6 +194,21 @@ def run(args):
                         continue
                     sender, receiver = (profiles[scenario[f"{role}_profile"]] for role in ("sender", "receiver"))
                     for seed in seeds:
+                        case = {"scenario": scenario["name"], "algorithm": algorithm,
+                                "interval_k": interval, "seed": seed}
+                        checkpoint_identity = {"schema_version": 1, "request_sha256": request_hash,
+                                               "case": case, "signed_workload": workload["evidence"]}
+                        checkpoint_path = args.output_dir / "cases" / request_hash / f"{_digest(case)}.json"
+                        if checkpoint_path.exists() and not args.force:
+                            checkpoint = _load_case(checkpoint_path, checkpoint_identity)
+                            _validate_rows([checkpoint["row"]], [scenario], [algorithm], [interval],
+                                           [seed], len(trace))
+                            rows.append(checkpoint["row"])
+                            assumptions.extend(checkpoint["assumptions"])
+                            if checkpoint.get("events"):
+                                events.append({**case, "events": checkpoint["events"]})
+                            print(f"RESUMED CASE {len(rows)}/{total}: {scenario['name']} {algorithm} k={interval} seed={seed}", flush=True)
+                            continue
                         print(f"SIGNED REPLAY {len(rows) + 1}/{total}: {scenario['name']} {algorithm} k={interval} seed={seed}", flush=True)
                         result = simulate(trace, algorithm, interval, workload, sender, receiver,
                                           configuration, seed, channel_trace=channel, replay_model=model)
@@ -168,9 +218,7 @@ def run(args):
                         if result["summary"].get("replay_model", model) != model:
                             raise ValueError("Signed replay engine returned a different model.")
                         timing = hardware[f"{scenario['name']}:{algorithm}"]
-                        case = {"scenario": scenario["name"], "algorithm": algorithm,
-                                "interval_k": interval, "seed": seed}
-                        rows.append({**result["summary"], **case, "replay_model": model,
+                        row = {**result["summary"], **case, "replay_model": model,
                                      "group_outcomes": result.get("outcomes", {}),
                                      "sender_profile": sender["id"], "receiver_profile": receiver["id"],
                                      "sender_profile_kind": sender["kind"], "receiver_profile_kind": receiver["kind"],
@@ -178,7 +226,13 @@ def run(args):
                                      "receiver_timing_equivalence": timing["receiver"]["equivalence"],
                                      "sender_timing_sample_kind": timing["sender"]["timing"]["sample_kind"],
                                      "receiver_timing_sample_kind": timing["receiver"]["timing"]["sample_kind"],
-                                     "signature_sizing_basis": "actual_signed_context_and_raw_messages"})
+                                     "signature_sizing_basis": "actual_signed_context_and_raw_messages"}
+                        _validate_rows([row], [scenario], [algorithm], [interval], [seed], len(trace))
+                        _save_case(checkpoint_path, {"identity": checkpoint_identity, "row": row,
+                                   "assumptions": result.get("assumptions", []),
+                                   "events": result.get("events", [])})
+                        rows.append(row)
+                        print(f"CHECKPOINTED CASE {len(rows)}/{total}", flush=True)
                         assumptions.extend(result.get("assumptions", []))
                         if result.get("events"):
                             events.append({**case, "events": result["events"]})

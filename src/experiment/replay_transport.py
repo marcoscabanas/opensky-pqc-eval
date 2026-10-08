@@ -228,6 +228,7 @@ class _Assembly:
     first_reception_us: int
     parts: dict[int, bytes] = field(default_factory=dict)
     object_bytes: int | None = None
+    largest_part: int = -1
 
 
 class FragmentReassembler:
@@ -264,6 +265,7 @@ class FragmentReassembler:
             del self.pending[key]
             return "conflicting_fragment", None
         state.parts[index] = payload
+        state.largest_part = max(state.largest_part, index)
         if index == 0:
             state.object_bytes = struct.unpack_from(">H", payload)[0]
             if not state.object_bytes:
@@ -272,7 +274,10 @@ class FragmentReassembler:
         if state.object_bytes is None:
             return "pending_fragments", None
         count = fragment_count(state.object_bytes)
-        if any(part >= count for part in state.parts):
+        # Checking every previously received index for each new fragment makes
+        # long signatures quadratic. The largest index is an exact sufficient
+        # statistic, including fragments that arrived before index zero.
+        if state.largest_part >= count:
             del self.pending[key]
             return "malformed_fragment", None
         if len(state.parts) != count:

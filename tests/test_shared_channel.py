@@ -1,10 +1,13 @@
 from array import array
+import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
 from src.experiment.shared_channel import (
     FRAME_S, _burst_environment, evaluate_channel, evaluate_shifted_channel,
+    _collision_mask, _variable_collision_mask,
 )
 
 
@@ -17,6 +20,92 @@ def channel(originals, auth=(), **options):
 
 
 class SharedChannelTests(unittest.TestCase):
+    def test_partitioned_schedules_match_full_sort_with_variable_observed_events(self):
+        generator = np.random.default_rng(817)
+        for trial in range(12):
+            runs = [np.sort(generator.uniform(0, 0.15, int(size)))
+                    for size in generator.integers(1, 25, size=12)]
+            auth = np.concatenate(runs)
+            offsets = np.concatenate(([0], np.cumsum([len(run) for run in runs])))
+            originals = generator.uniform(0, 0.15, 31)
+            observed = generator.uniform(0, 0.15, 23)
+            durations = generator.uniform(20e-6, 0.07, len(observed))
+            with self.subTest(trial=trial), mock.patch.multiple(
+                "src.experiment.shared_channel", _COLLISION_SORT_CHUNK=17,
+                _COLLISION_BUCKET_S=0.013,
+            ):
+                result = channel(originals, auth, auth_run_offsets=offsets,
+                                 observed_starts=observed, observed_durations_s=durations,
+                                 background_frames_per_second=20,
+                                 loss={"kind": "iid", "probability": 0.2})
+            starts = np.concatenate((originals, auth, result["background_starts"], observed))
+            lengths = np.concatenate((np.full(len(starts) - len(observed), FRAME_S), durations))
+            expected = _variable_collision_mask(starts, lengths)
+            np.testing.assert_array_equal(result["original_collision_with_auth"], expected[:len(originals)])
+            np.testing.assert_array_equal(result["auth_collision"],
+                                          expected[len(originals):len(originals) + len(auth)])
+            reference = channel(originals, auth, observed_starts=observed,
+                                observed_durations_s=durations,
+                                background_frames_per_second=20,
+                                loss={"kind": "iid", "probability": 0.2})
+            for key, value in reference.items():
+                if isinstance(value, np.ndarray):
+                    np.testing.assert_array_equal(value, result[key], err_msg=key)
+            self.assertEqual(reference["summary"], result["summary"])
+
+    def test_partition_boundaries_keep_touching_ulp_overlap_and_empty_gaps_exact(self):
+        for origin in (0.01, 1.0, 1000.0):
+            values = np.array([
+                origin - FRAME_S, origin, origin + FRAME_S,
+                origin + 2 * FRAME_S - 1e-8,
+                origin + 5 * FRAME_S,
+                origin + 6 * FRAME_S - 3 * np.spacing(origin),
+                origin + 9 * FRAME_S,
+                origin + 10 * FRAME_S - 8 * np.spacing(origin),
+            ])
+            # Shuffle run order while preserving ordering within each run.
+            auth = np.concatenate((values[4:], values[:4]))
+            with self.subTest(origin=origin), mock.patch.multiple(
+                "src.experiment.shared_channel", _COLLISION_SORT_CHUNK=2,
+                _COLLISION_BUCKET_S=origin,
+            ):
+                result = channel([], auth, auth_run_offsets=[0, 4, 8], horizon=1001)
+            np.testing.assert_array_equal(result["auth_collision"], _collision_mask(auth))
+
+    def test_identical_start_partition_is_bounded_without_sorting_all_frames(self):
+        auth = np.concatenate((np.full(123, 0.1), np.full(90, 0.3), np.full(17, 0.2)))
+        real_argsort = np.argsort
+        sizes = []
+
+        def bounded_argsort(values, *args, **kwargs):
+            sizes.append(len(values))
+            self.assertLessEqual(len(values), 7)
+            return real_argsort(values, *args, **kwargs)
+
+        with mock.patch.multiple("src.experiment.shared_channel", _COLLISION_SORT_CHUNK=7), \
+                mock.patch("src.experiment.shared_channel.np.argsort", side_effect=bounded_argsort):
+            result = channel([], auth, auth_run_offsets=[0, 123, 213, 230])
+        self.assertTrue(np.all(result["auth_collision"]))
+        self.assertTrue(sizes)
+
+    def test_readonly_memory_mapped_authentication_runs_are_supported(self):
+        values = np.array([0.2, 0.20001, 0.8, 0.01, 0.01001, 0.6])
+        with tempfile.TemporaryDirectory() as temporary:
+            path = temporary + "/schedule.npy"
+            np.save(path, values)
+            auth = np.load(path, mmap_mode="r")
+            with mock.patch.multiple("src.experiment.shared_channel", _COLLISION_SORT_CHUNK=2):
+                result = channel([0.4], auth, auth_run_offsets=[0, 3, 6])
+            np.testing.assert_array_equal(result["auth_collision"], _collision_mask(values))
+            np.testing.assert_array_equal(auth, values)
+
+    def test_invalid_authentication_run_partitions_fail(self):
+        for offsets in ([], [1, 3], [0, 2], [0, 2, 2, 3], [0, 3.0], [[0, 3]], [0, 3]):
+            with self.subTest(offsets=offsets), self.assertRaisesRegex(ValueError, "run"):
+                channel([], [0.1, 0.3, 0.2], auth_run_offsets=offsets)
+        empty = channel([], [], auth_run_offsets=[0])
+        self.assertEqual(empty["summary"]["auth_frames"], 0)
+
     def test_authentication_overlap_destroys_both_frames_and_changes_paired_baseline(self):
         result = channel([0.0, 0.01], [FRAME_S / 2])
         np.testing.assert_array_equal(result["original_success_baseline"], [True, True])

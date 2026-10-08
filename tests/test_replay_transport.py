@@ -1,4 +1,5 @@
 import dataclasses
+import struct
 import unittest
 from unittest.mock import patch
 
@@ -13,6 +14,27 @@ RAW_B = bytes.fromhex("8D40621D58C382D690C8AC2863A8")
 
 
 class ReplayTransportTests(unittest.TestCase):
+    def test_out_of_range_index_is_rejected_before_or_after_length_fragment(self):
+        fragments = transport.fragment_envelope(self.envelope)
+        malformed = struct.pack(">HH", self.envelope.descriptor.seq, len(fragments)) + b"abc"
+        for order in ((malformed, fragments[0]), (fragments[0], malformed)):
+            assembler = transport.FragmentReassembler(5)
+            self.assertEqual(assembler.add(ICAO, order[0], 10.3)[0], "pending_fragments")
+            self.assertEqual(assembler.add(ICAO, order[1], 10.3)[0], "malformed_fragment")
+            self.assertFalse(assembler.pending)
+
+    def test_large_signature_reassembles_in_both_arrival_orders(self):
+        # Transport validity is separate from signature validity; use a large
+        # byte string to exercise the long-object path without a slow signer.
+        envelope = dataclasses.replace(self.envelope, signature=bytes(range(256)) * 30)
+        fragments = transport.fragment_envelope(envelope)
+        for ordered in (fragments, reversed(fragments)):
+            assembler = transport.FragmentReassembler(5)
+            for fragment in ordered:
+                status, delivered = assembler.add(ICAO, fragment, 10.3)
+            self.assertEqual(status, "reassembled")
+            self.assertEqual(delivered, envelope)
+
     def setUp(self):
         self.signer = Signer()
         self.messages = [(10.0, RAW_A), (10.2, RAW_B)]

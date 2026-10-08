@@ -11,13 +11,26 @@ import unittest
 from unittest.mock import patch
 
 from src.experiment.main_report import (
-    case_metrics, compare_windows, coverage_rows, generate_report,
+    case_metrics, compare_windows, coverage_rows, generate_report, signature_airtime_bounds,
 )
 from src.experiment import signed_experiment
 from src.processing.prepare_recording import prepare_recording
 
 
 class ReportingMetricTests(unittest.TestCase):
+    def test_omitted_slh_bound_is_analytical_and_accounts_for_followup(self):
+        report = {"parameters": {"algorithms": ["ECDSA-P256"]}, "rows": [
+            {"algorithm": "ECDSA-P256", "interval_k": 20, "source_groups": 37228,
+             "signature_only_7byte_lower_bound_frames": 372280,
+             "trace_duration_s": 3600, "followup_s": 600}]}
+        actual, bound = signature_airtime_bounds(report)
+        self.assertEqual(actual["basis"], "actual_signed_bytes")
+        self.assertTrue(bound["basis"].startswith("analytical_only"))
+        self.assertEqual(bound["signature_only_frames"], 41807044)
+        self.assertAlmostEqual(bound["required_airtime_s"], 5016.84528)
+        self.assertGreater(bound["target_plus_followup_airtime_pct"], 100)
+        self.assertEqual(report["parameters"]["algorithms"], ["ECDSA-P256"])
+
     def point(self):
         return {"threshold_s": 10, "source_eligible_messages": 10,
                 "source_authenticated_within_threshold_messages": 2,
@@ -82,6 +95,8 @@ class MainReportIntegrationTests(unittest.TestCase):
             "--hardware-profiles", str(cls.root / "profiles.json"), "--scenarios", str(cls.root / "scenarios.json"),
             "--output-dir", str(cls.window / "03_replay"), "--workloads-dir", str(cls.window / "02_signed"),
             "--algorithm", "ECDSA-P256", "--intervals", "1", "2", "--replay-model", "signed_detached"])[1]
+        args.analysis_context = {"mode": "conditional_recorded_timing",
+                                 "recording_limitations": ["Generated acquisition timing limitation."]}
         with contextlib.redirect_stdout(io.StringIO()):
             signed_experiment.run(args)
         cls.report = json.loads((cls.window / "03_replay/replay_summary.json").read_text())
@@ -92,12 +107,17 @@ class MainReportIntegrationTests(unittest.TestCase):
         cls.temporary.cleanup()
 
     def test_signature_figures_and_full_case_tables_are_nonempty(self):
-        for stem in ("01_traffic_by_df", "02_signature_cost", "03_channel_load", "04_ordinary_delivery",
+        for stem in ("01_traffic_by_df", "02_signature_cost", "02_signature_airtime_lower_bound", "03_channel_load", "04_ordinary_delivery",
                      "05_authentication_deadlines", "05_authentication_deadlines_from_reception", "06_backlog", "06_backlog_timeline_01"):
             for extension in ("png", "pdf", "svg"):
                 self.assertGreater((self.window / "figures" / f"{stem}.{extension}").stat().st_size, 1000)
         text = (self.window / "report.md").read_text()
         self.assertIn("Neither model establishes an empirical operational failure probability", text)
+        self.assertIn("conditional timing", text)
+        self.assertIn("Generated acquisition timing limitation", text)
+        self.assertIn("Results and sensitivity tables", text)
+        self.assertIn("Mean signature bytes", text)
+        self.assertIn("Median authentication delay", text)
         self.assertNotIn("authentication_outcomes.png", text)
         self.assertEqual(len((self.window / "figures/case_metrics.csv").read_text().splitlines()), 3)
 
