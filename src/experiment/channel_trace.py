@@ -64,6 +64,10 @@ def load_channel_trace(path, trace):
     rows need neither decoded bytes nor an aircraft address. Event order and
     repeated payloads do not affect inclusion.
 
+    Optional ``target_window_start_s``/``target_window_end_s`` declare a half-open
+    evaluation window, including quiet periods before/after target observations.
+    Without them, legacy traces use their first/last target observation bounds.
+
     Recording coverage is declared independently of its final event, and is
     checked against the simulation follow-up by :func:`validate_coverage`.
     Offered airtime sums full envelopes whose *start* lies in each window;
@@ -97,8 +101,18 @@ def load_channel_trace(path, trace):
     if coverage_start != 0:
         raise ValueError("Channel trace coverage_start_s must be zero.")
     coverage_end = _number(header.get("coverage_end_s"), "coverage_end_s", minimum=0)
-    target_start = min(relative for relative, _ in targets.values())
-    target_end = max(relative for relative, _ in targets.values())
+    observed_target_start = min(relative for relative, _ in targets.values())
+    observed_target_end = max(relative for relative, _ in targets.values())
+    declared_window = "target_window_start_s" in header or "target_window_end_s" in header
+    if declared_window:
+        target_start = _number(header.get("target_window_start_s"), "target_window_start_s", minimum=0)
+        target_end = _number(header.get("target_window_end_s"), "target_window_end_s", minimum=0)
+        if target_end <= target_start:
+            raise ValueError("Declared target window must have positive duration.")
+        if observed_target_start < target_start or observed_target_end >= target_end:
+            raise ValueError("A target lies outside the declared half-open target window.")
+    else:
+        target_start, target_end = observed_target_start, observed_target_end
     if target_end > coverage_end and not _same_time(target_end, coverage_end):
         raise ValueError("Channel recording coverage ends before the target trace.")
     for identifier, (relative, timestamp) in targets.items():
@@ -140,7 +154,7 @@ def load_channel_trace(path, trace):
             extra_starts.append(start)
             extra_durations.append(duration)
             extra_airtime.append(duration)
-            if target_start <= start <= target_end:
+            if target_start <= start and (start < target_end if declared_window else start <= target_end):
                 extra_in_target_window += 1
                 extra_target_window_airtime.append(duration)
 
@@ -160,6 +174,8 @@ def load_channel_trace(path, trace):
         "target_window_start_s": target_start,
         "target_window_end_s": target_end,
         "target_window_duration_s": target_duration,
+        "target_window_declared": declared_window,
+        "target_window_boundary": "[start,end)" if declared_window else "first through last target, inclusive",
         "total_frames": len(seen_events),
         "target_frames": len(seen_targets),
         "non_target_frames": len(extra_starts),
@@ -201,3 +217,36 @@ def validate_coverage(channel_trace, horizon):
             f"{horizon:g} s horizon including authentication follow-up. Supply channel "
             "observations covering the follow-up; missing coverage is not empty traffic."
         )
+
+
+def replay_window(trace, channel_trace, followup_s, receive_jitter_ms=0):
+    """Return capture start/end and the cutoff used by replay and preflight.
+
+    Declared target windows are half-open. Their cutoff is exactly window end
+    plus follow-up: frame reception and verification must finish by that time,
+    and jitter never extends recording coverage. Legacy traces without a
+    declared window retain first/last-target bounds and the historical extra
+    frame duration plus maximum reception jitter.
+    """
+    records = list(trace.values()) if isinstance(trace, dict) else list(trace)
+    if not records:
+        raise ValueError("A nonempty target trace is required for replay timing.")
+    times = [_number(row.get("relative_time_s"), "Target relative_time_s", minimum=0)
+             for row in records]
+    followup = _number(followup_s, "followup_s", minimum=0)
+    jitter = _number(receive_jitter_ms, "receive_jitter_ms", minimum=0) / 1000
+    summary = channel_trace.get("summary", {}) if channel_trace is not None else {}
+    if summary.get("target_window_declared", False):
+        start = _number(summary.get("target_window_start_s"), "target_window_start_s", minimum=0)
+        end = _number(summary.get("target_window_end_s"), "target_window_end_s", minimum=0)
+        if min(times) < start or max(times) >= end:
+            raise ValueError("A target lies outside the declared half-open target window.")
+        horizon = end + followup
+    else:
+        start, end = min(times), max(times)
+        horizon = end + followup + FRAME_S + jitter
+    if end <= start:
+        raise ValueError("Trace observation duration must be positive.")
+    if not math.isfinite(horizon):
+        raise ValueError("Replay horizon must be finite.")
+    return start, end, horizon

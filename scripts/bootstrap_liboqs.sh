@@ -88,7 +88,7 @@ fi
 [[ "$bootstrap_mode" != check ]] || fail "Local installation is absent: $bootstrap_prefix"
 
 for bootstrap_tool in git cmake make cc; do
-    command -v "$bootstrap_tool" >/dev/null || fail "Missing prerequisite: $bootstrap_tool (see docs/native_crypto.md)."
+    command -v "$bootstrap_tool" >/dev/null || fail "Missing prerequisite: $bootstrap_tool (see README.md)."
 done
 bootstrap_openssl=${OPENSSL_ROOT_DIR:-}
 if [[ -z "$bootstrap_openssl" && "$(uname -s)" == Darwin ]] && command -v brew >/dev/null; then
@@ -97,7 +97,7 @@ fi
 if [[ -n "$bootstrap_openssl" ]]; then
     [[ -f "$bootstrap_openssl/include/openssl/ssl.h" ]] || fail "OpenSSL headers missing under OPENSSL_ROOT_DIR: $bootstrap_openssl"
 elif [[ ! -f /usr/include/openssl/ssl.h && ! -f /usr/local/include/openssl/ssl.h ]]; then
-    fail 'Install OpenSSL development headers, or set OPENSSL_ROOT_DIR (see docs/native_crypto.md).'
+    fail 'Install OpenSSL development headers, or set OPENSSL_ROOT_DIR (see README.md).'
 fi
 
 # Preserve interrupted work. An existing source checkout must be the pinned,
@@ -151,4 +151,4 @@ printf '%s\n' "${bootstrap_configure[@]}" > "$bootstrap_prefix/configure-argumen
 cp "$bootstrap_build/CMakeCache.txt" "$bootstrap_prefix/build-CMakeCache.txt"
 printf 'Installed native dependency. In the shell used to run experiments:\n'
 printf 'export OQS_INSTALL_PATH=%q\n' "$bootstrap_prefix"
-printf 'Then verify Python library selection as documented in docs/native_crypto.md.\n'
+printf 'Then verify Python library selection as documented in README.md.\n'

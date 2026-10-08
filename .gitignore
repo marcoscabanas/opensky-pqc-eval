@@ -9,29 +9,20 @@ __pycache__/
 *.pyo
 *.pyd
 .DS_Store
-
-# Local experiment state includes private keys; never commit it.
-.checkpoints/
-*.partial
-*.lock
-pipeline_status.json
-signature_progress.json
 *.log
-results/**/archive/
-results/development/recovery/
+*.lock
+*.partial
 
-# Optional generated data
-# All new experiments write here; published reference artifacts stay versioned.
-results/runs/
-# Local pre-cleanup experiments and environments are preserved, not published.
-results/archive/
-# Compatibility for checkouts of earlier revisions.
-runs/
-# Earlier replay artifacts remain local; the current reference is published separately.
-results/development/replay/
-results/development/delayed_replay/
-# Keep small configuration and metadata versioned, but ignore large future data.
-data/full/
-results/full/
-!data/full/.gitkeep
-!results/full/.gitkeep
+# Historical data, results, manuscripts, checkpoints and private keys. Local only.
+/trash/
+.checkpoints/
+
+# Original recordings and generated results are distributed as research artifacts,
+# not silently committed as large Git files. Metadata and empty destinations stay visible.
+/data/*.jsonl
+/results/daytime/*
+!/results/daytime/.gitkeep
+/results/nighttime/*
+!/results/nighttime/.gitkeep
+/results/comparison/*
+!/results/comparison/.gitkeep

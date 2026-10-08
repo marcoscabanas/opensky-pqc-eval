@@ -1,7 +1,6 @@
 """Generate real signed workloads, then replay detached or before-send authentication.
 
-This is the full-study entry point. The earlier development calibration replay
-is retained in replay_experiment.py and its frozen reports keep their meaning.
+This module runs the main study using real signatures and measured input bytes.
 Only one algorithm/grouping workload is held in memory at a time; its exact
 signature bytes are reused across receiver/channel scenarios. The declared
 deterministic experiment needs one replay per case; seeds are retained only for
@@ -12,11 +11,11 @@ import argparse
 from contextlib import nullcontext
 from pathlib import Path
 
-from src.experiment.channel_trace import load_channel_trace, validate_coverage
-from src.experiment.delayed_replay import FRAME_S, validate_scenario
+from src.experiment.channel_trace import load_channel_trace, validate_coverage, replay_window
+from src.experiment.model_support import validate_scenario
 from src.experiment.hardware_profiles import load_profiles, timing_samples_ms
-from src.experiment.operational_feasibility import load_json, load_trace
-from src.experiment.replay_experiment import (
+from src.experiment.io_support import load_json, load_trace
+from src.experiment.replay_artifacts import (
     SCHEMA_VERSION, SIGNED_REPLAY_MODELS, _digest, _file_evidence, _profile_evidence, _publish,
     _source_evidence, load_scenarios, outputs_match,
 )
@@ -80,7 +79,6 @@ def run(args):
     profiles = load_profiles(args.hardware_profiles)
     trace = load_trace(args.trace)
     channel = load_channel_trace(args.channel_trace, trace)
-    end = max(record["relative_time_s"] for record in trace.values())
     normalized, hardware = {}, {}
     for scenario in scenarios:
         parameters = dict(scenario["parameters"])
@@ -89,7 +87,7 @@ def run(args):
         if parameters["background_frames_per_second"]:
             raise ValueError("Observed channel traffic cannot be combined with synthetic background.")
         # Fail missing follow-up before spending time generating signatures.
-        required_horizon = end + parameters["followup_s"] + FRAME_S + parameters["receive_jitter_ms"] / 1000
+        _, _, required_horizon = replay_window(trace, channel, parameters["followup_s"], parameters["receive_jitter_ms"])
         validate_coverage(channel, required_horizon)
         if len(trace) + sum(t <= required_horizon for t in channel["extra_starts"]) > parameters["max_events"]:
             raise ValueError("Input traffic alone exceeds max_events; choose an explicit larger event budget before signing.")
@@ -146,7 +144,9 @@ def run(args):
                 key = f"{algorithm}:k={interval}:max_batch_wait_s={wait}"
                 print(f"SIGNED WORKLOAD: {key}", flush=True)
                 workload = build_or_load_workload(trace, algorithm, interval, wait, cache,
-                                                 validate_only=args.validate_only or prior is not None)
+                                                 validate_only=args.validate_only or prior is not None or getattr(args, "require_workloads", False))
+                # Artifact identity must survive copying a published cache into a new checkout.
+                workload["evidence"] = {**workload["evidence"], "cache_dir": Path(workload["evidence"]["cache_dir"]).name}
                 workloads[key] = workload["evidence"]
                 if prior is not None:
                     if prior["provenance"].get("signed_workloads", {}).get(key) != workload["evidence"]:

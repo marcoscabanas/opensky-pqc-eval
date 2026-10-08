@@ -25,11 +25,11 @@ import shutil
 import sys
 import tempfile
 
-from .generate_signatures import (
+from .io_support import (
     load_algorithm_module, load_trace, package_version, sha256_file,
     sync_directory, validate_metadata,
 )
-from .replay_simulator import form_groups
+from .model_support import form_groups
 from .replay_transport import (
     ALGORITHM_CODES, context_bytes, decode_envelope, describe_group,
     encode_envelope, make_envelope,
@@ -80,7 +80,7 @@ def _installed_oqs():
             continue
         return importlib.import_module("oqs")
     raise RuntimeError("No installed liboqs library is loadable; automatic downloading is disabled. "
-                       "Follow docs/native_crypto.md before generating signatures.")
+                       "Follow README.md before generating signatures.")
 
 
 def _backend_identity(algorithm, config):
@@ -187,7 +187,7 @@ def _prepare(trace, algorithm, interval, max_batch_wait_s):
         "backend": backend, "interval": interval,
         "max_batch_wait_s": max_batch_wait_s,
         "source_sha256": {filename: sha256_file(Path(__file__).with_name(filename))
-                          for filename in ("signed_workload.py", "replay_transport.py", "replay_simulator.py")},
+                          for filename in ("signed_workload.py", "replay_transport.py", "model_support.py", "io_support.py")},
         "crypto_source_sha256": {config["module"]: sha256_file(module.__file__),
                                  "src.crypto.common": sha256_file(Path(__file__).parents[1] / "crypto" / "common.py")},
     }

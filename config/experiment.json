@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "data_manifest": "data/manifest.json",
+  "algorithms_config": "config/algorithms.json",
+  "hardware_profiles": "config/hardware_profiles.json",
+  "scenarios": "config/signed_replay_scenarios.json",
+  "intervals": [
+    1,
+    5,
+    10,
+    20
+  ],
+  "target_duration_s": 3600,
+  "followup_s": 600,
+  "windows": {
+    "daytime": {
+      "raw": "data/daytime.jsonl",
+      "output": "results/daytime"
+    },
+    "nighttime": {
+      "raw": "data/nighttime.jsonl",
+      "output": "results/nighttime"
+    }
+  },
+  "comparison_output": "results/comparison"
+}

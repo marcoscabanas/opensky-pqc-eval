@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.experiment import signed_experiment as experiment
-from src.experiment.replay_experiment import load_scenarios
+from src.experiment.replay_artifacts import load_scenarios
 
 
 class SignedConfigurationTests(unittest.TestCase):
@@ -196,7 +196,7 @@ class SignedExperimentTests(unittest.TestCase):
     def test_legacy_scenario_cannot_be_mislabeled_as_actual_signing(self):
         self.parameters["replay_model"] = "delayed_authentication"
         self.write_json("scenarios.json", self.scenarios)
-        with self.assertRaisesRegex(ValueError, "signed_before_send"):
+        with self.assertRaisesRegex(ValueError, "Unknown replay_model"):
             experiment.run(self.args())
 
 

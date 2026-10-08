@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "notes": [
-    "The two one-hour datasets have not yet been acquired or evaluated. These are declared experimental settings, not aircraft certification limits.",
+    "Daytime and nighttime recordings are supplied by the researcher. No final experiment has run in this checkout. These are declared experimental settings, not aircraft certification limits.",
     "Actual signed context plus original-message bytes are cached once per algorithm and exact-count grouping policy and reused across channel and pacing scenarios.",
     "Ordinary messages are eligible at their trace times and never wait for group formation or signing. They have priority over queued authentication fragments; a fragment already on air finishes first.",
-    "All observed 1090 MHz traffic remains in the channel. Required recording coverage includes the complete fixed follow-up horizon and frame completion.",
+    "All supplied Mode S frames remain in the observed channel. Target cohort is the first 3600 seconds; cutoff is 4200 seconds. Frames completing after the cutoff are pending, and no unobserved follow-up is synthesized.",
     "A timing-matched no-authentication control separates RF effects of added fragments from shifts caused by contention at the modeled aircraft transmitter.",
     "Published embedded point estimates model service time. Offline signing wall time is not onboard timing.",
     "The predeclared follow-up is 600 s: an isolated SLH-DSA k=20 group takes approximately 319 s signing plus 269 s to pace 2691 fragments at 10 frames/s. This engineering observation budget is not a deadline and does not guarantee queues will drain.",

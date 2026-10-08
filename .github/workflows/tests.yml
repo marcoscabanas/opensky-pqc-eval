@@ -1,4 +1,4 @@
-name: Reproduction checks
+name: Main experiment checks
 
 on:
   push:
@@ -8,29 +8,6 @@ permissions:
   contents: read
 
 jobs:
-  replay:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-          cache: pip
-          cache-dependency-path: config/requirements/replay.txt
-      - run: python -m pip install -r config/requirements/replay.txt
-      - run: python -m pip check
-      - run: python scripts/check_reproduction.py --inputs-only
-      - run: python scripts/check_demo.py --inputs-only
-      - name: Run tests that do not need native cryptography
-        run: >-
-          python -m unittest
-          tests.test_delayed_metrics tests.test_delayed_replay
-          tests.test_shared_channel tests.test_channel_trace
-          tests.test_constraint_screening tests.test_hardware_profiles
-          tests.test_replay_experiment tests.test_pipeline
-          tests.test_signed_workload tests.test_signed_replay tests.test_signed_experiment
-          tests.test_reproduction_check tests.test_signed_comparison tests.test_demo -v
-
   native:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -90,20 +67,11 @@ jobs:
           python -m tests.test_crypto
       - name: Run the complete test suite with native crypto installed
         run: python -m unittest discover -s tests -v
-      - name: Run and cryptographically validate the 96-case detached demonstration
+      - name: Verify the public commands do not depend on archived data
         run: |
-          python -m src.pipeline --config config/demo.json
-          python -m src.pipeline --config config/demo.json --validate-only
-          python scripts/check_demo.py
-      - name: Export demonstration figures
-        run: >-
-          python -m src.experiment.plot_signed_replay
-          --results-dir results/runs/demo/replay
-          --output-dir results/runs/demo/figures
-          --label 'Synthetic implementation demo'
-      - name: Preserve demonstration outputs and public signed workloads
-        uses: actions/upload-artifact@v4
-        with:
-          name: detached-demo-linux
-          path: results/runs/demo/
-          if-no-files-found: error
+          python run_experiment.py --help
+          python scripts/01_prepare.py --help
+          python scripts/02_sign.py --help
+          python scripts/03_replay.py --help
+          python scripts/04_report.py --help
+          python scripts/05_compare.py --help

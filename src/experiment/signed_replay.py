@@ -14,9 +14,10 @@ import random
 import numpy as np
 
 from .delayed_metrics import summarize
-from .delayed_replay import validate_scenario, _queue_full
+from .channel_trace import replay_window, validate_coverage
+from .model_support import validate_scenario, _queue_full
 from .hardware_profiles import timing_samples_ms
-from .replay_simulator import FRAME_S, _number, _quantiles, form_groups
+from .model_support import FRAME_S, _number, _quantiles, form_groups
 from .replay_transport import (
     FragmentReassembler, ReplayReceiver, encode_envelope, fragment_count,
     fragment_envelope,
@@ -288,13 +289,12 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
             raise ValueError("Duplicate trace ID.")
         by_id[record["trace_id"]] = index
         raw.append(message)
-    start, end = records[0]["relative_time_s"], records[-1]["relative_time_s"]
-    if end <= start:
-        raise ValueError("Trace observation duration must be positive.")
+    start, end, horizon = replay_window(records, channel_trace, p["followup_s"], p["receive_jitter_ms"])
+    declared_window = bool(channel_trace is not None and
+                           channel_trace.get("summary", {}).get("target_window_declared", False))
     sign_samples = timing_samples_ms(sender_profile, algorithm, "sign")
     verify_samples = timing_samples_ms(receiver_profile, algorithm, "verify")
     jitter = p["receive_jitter_ms"] / 1000
-    horizon = end + p["followup_s"] + FRAME_S + jitter
     association_tolerance = (_detached_association_tolerance(records, jitter)
                              if detached else horizon + jitter + 1)
     source_times = np.array([record["relative_time_s"] for record in records])
@@ -304,7 +304,6 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
     channel_options, observed_count = {}, 0
     observed_starts, observed_durations = np.empty(0), np.empty(0)
     if channel_trace is not None:
-        from .channel_trace import validate_coverage
         validate_coverage(channel_trace, horizon)
         if p["background_frames_per_second"]:
             raise ValueError("Observed channel traffic and synthetic background cannot be combined.")
@@ -414,7 +413,8 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
     tx_delays = original_starts - source_times
     metrics = summarize(records, baseline, received, reception_times, auth_at, outcomes,
                         horizon=horizon, thresholds_s=p["coverage_thresholds_s"],
-                        baseline_reception_times=baseline_arrivals, ordinary_tx_delays=tx_delays)
+                        baseline_reception_times=baseline_arrivals, ordinary_tx_delays=tx_delays,
+                        capture_window=(start, end) if declared_window else None)
     if not p["record_events"]:
         metrics.pop("aircraft_freshness", None)
     # A message not observed can still be awaiting signing, radio, or reception.
@@ -422,10 +422,18 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
     transmitted = np.isfinite(original_starts)
     completed = transmitted & (reception_times <= horizon)
     rf_lost = transmitted & ~channel["original_success_with_auth"]
+    if declared_window:
+        rf_lost &= completed
+    auth_lost = ~channel["auth_success"]
+    auth_in_flight = channel["auth_success"] & (auth_arrivals > horizon)
+    if declared_window:
+        auth_lost &= auth_arrivals <= horizon
+        auth_in_flight = auth_arrivals > horizon
     known_withheld = np.array([outcome in {"unsigned_tail", "sender_queue_overflow"}
                                for outcome in outcomes]) & ~transmitted
     duration = end - start
-    capture = lambda times: (times >= start) & (times <= end)
+    capture = lambda times: (times >= start) & ((times < end) if declared_window else (times <= end))
+    followup = lambda times: np.isfinite(times) & ((times >= end) if declared_window else (times > end))
     observed_airtime = float(np.sum(observed_durations[capture(observed_starts)]))
     original_capture = int(np.count_nonzero(capture(original_starts)))
     auth_capture = int(np.count_nonzero(capture(auth_times)))
@@ -451,6 +459,10 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
         "authentication_mode": "per_message" if interval == 1 else "batched",
         "signature_workload_evidence": workload.get("evidence", {}),
         "trace_messages": len(records), "trace_aircraft": len(set(aircraft)), "trace_duration_s": duration,
+        "target_window_declared": declared_window,
+        "target_window_boundary": "[start,end)" if declared_window else "first through last target, inclusive",
+        "horizon_policy": ("declared_window_end_plus_followup; completion must occur by cutoff"
+                           if declared_window else "last_target_plus_followup_plus_frame_and_max_jitter"),
         "source_groups": len(groups), "unsigned_tail_messages": len(unsigned_ids),
         "followup_s": p["followup_s"], "max_batch_wait_s": p["max_batch_wait_s"],
         "receiver_retention_s": horizon + jitter + 1,
@@ -480,8 +492,8 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
         "authentication_only_additional_rf_loss_fraction": float((control_received & ~received).sum() / len(records)),
         "authentication_only_rf_reception_gain_messages": int((received & ~control_received).sum()),
         "auth_frames_transmitted": frame_total, "auth_frames_received": int(auth_received.sum()),
-        "auth_frames_lost": int((~channel["auth_success"]).sum()),
-        "auth_frames_in_flight_at_horizon": int((channel["auth_success"] & (auth_arrivals > horizon)).sum()),
+        "auth_frames_lost": int(auth_lost.sum()),
+        "auth_frames_in_flight_at_horizon": int(auth_in_flight.sum()),
         "auth_frames_after_observation": frame_total - auth_capture,
         "actual_signature_bytes_total": sum(len(group.source["envelope"].signature) for group in groups),
         "signature_only_7byte_lower_bound_frames": sum(math.ceil(len(group.source["envelope"].signature) / 7)
@@ -496,8 +508,8 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
         "augmented_target_offered_airtime_load": original_capture * FRAME_S / duration,
         "additional_offered_airtime_load": auth_capture * FRAME_S / duration,
         "augmented_offered_airtime_load": ((original_capture + auth_capture) * FRAME_S + observed_airtime) / duration,
-        "non_target_airtime_seconds_followup": float(np.sum(observed_durations[observed_starts > end])),
-        "ordinary_airtime_seconds_followup": int(np.count_nonzero(original_starts > end)) * FRAME_S,
+        "non_target_airtime_seconds_followup": float(np.sum(observed_durations[followup(observed_starts)])),
+        "ordinary_airtime_seconds_followup": int(np.count_nonzero(followup(original_starts))) * FRAME_S,
         "authentication_airtime_seconds_followup": (frame_total - auth_capture) * FRAME_S,
         "sender_busy_seconds_all_aircraft": sender_busy,
         "sender_busy_seconds_during_capture": sender_busy_capture,
@@ -546,6 +558,15 @@ def simulate(trace, algorithm, interval, workload, sender_profile, receiver_prof
         assumptions[4] = "The baseline uses recorded target times; the augmented run releases targets independently of collection and signing, with radio contention allowed to shift them. A timing-matched control removes authentication frames while retaining the augmented target schedule to isolate their RF effect."
         assumptions[5] = "A fixed capture-plus-follow-up horizon censors unfinished work. Incomplete fixed-count groups cannot authenticate, but their ordinary messages are still transmitted; radio-pending originals remain separate from RF losses."
         assumptions[6] = "Receiver reconstruction uses received raw bytes, signed tags and provisioned keys/session, never sender trace IDs. A shared timing allowance is supplied from an input-only priority-radio upper bound: per aircraft b_i=max(a_i+F,b_(i-1)+F), tolerance=max_i(b_i+F-a_i)+receive jitter+1 microsecond for timestamp rounding. It is fixed across signing/grouping/rate cases for the same trace and jitter, not inferred from actual delays or operational clocks. Retention still spans the horizon; excess matching observations inside the signed first/last window plus this allowance remain ambiguous."
+    if declared_window:
+        cutoff_note = (
+            "The declared target window is [start,end), including quiet edges. The fixed observation cutoff is exactly "
+            "window end plus follow-up, without added frame time or jitter. Only frame receptions and verification "
+            "completions at or before this cutoff count as complete; in-flight work remains pending. Offered airtime "
+            "counts full envelopes by start time, with starts at window end assigned to follow-up."
+        )
+        assumptions.append(cutoff_note)
+        summary["metric_notes"].append(cutoff_note)
     return {"summary": summary, "outcomes": dict(sorted(Counter(diagnosed).items())),
             "parameters": p, "assumptions": assumptions, "events": events}
 

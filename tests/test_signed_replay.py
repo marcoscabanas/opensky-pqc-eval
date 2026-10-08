@@ -11,9 +11,9 @@ from unittest.mock import patch
 import numpy as np
 
 from src.experiment import signed_replay
-from src.experiment.replay_simulator import FRAME_S, form_groups
+from src.experiment.model_support import FRAME_S, form_groups
 from src.experiment.replay_transport import Envelope, make_envelope
-from tests.test_replay_simulator import ALGORITHM, profile_fixture, trace_fixture
+from tests.fixtures import ALGORITHM, profile_fixture, trace_fixture
 
 
 class FakeSigner:
@@ -66,6 +66,75 @@ def replay(records=None, interval=1, profile=None, workload=None, channel_trace=
 
 
 class SignedReplayTest(unittest.TestCase):
+    def test_declared_window_accounts_for_quiet_edges_and_boundary_followup(self):
+        records = trace_fixture(count=2, spacing=6, aircraft=("ABCDEF",))
+        for row in records:
+            row["relative_time_s"] += 2
+        channel = {"extra_starts": [0.5, 9.5, 10, 11.9],
+                   "extra_durations_s": [FRAME_S] * 4, "coverage_end_s": 12,
+                   "summary": {"target_window_declared": True,
+                               "target_window_start_s": 0, "target_window_end_s": 10}}
+        result = replay(records, interval=2, profile=profile_fixture(sign_ms=2000),
+                        replay_model="signed_detached", channel_trace=channel, followup_s=2)
+        summary = result["summary"]
+        self.assertEqual(summary["capture_start_s"], 0)
+        self.assertEqual(summary["capture_end_s"], 10)
+        self.assertEqual(summary["trace_duration_s"], 10)
+        self.assertEqual(summary["capture_duration_s"], 10)
+        self.assertEqual(summary["followup_after_capture_s"], 2)
+        self.assertEqual(summary["observation_horizon_s"], 12)
+        self.assertEqual(result["events"][0]["auth_tx_start_s"], 10)
+        self.assertEqual(summary["additional_offered_airtime_load"], 0)
+        self.assertEqual(summary["auth_frames_after_observation"], summary["auth_frames_transmitted"])
+        self.assertAlmostEqual(summary["non_target_offered_airtime_load"], 2 * FRAME_S / 10)
+        self.assertAlmostEqual(summary["non_target_airtime_seconds_followup"], 2 * FRAME_S)
+        self.assertAlmostEqual(summary["target_offered_airtime_load"], 2 * FRAME_S / 10)
+        self.assertEqual(summary["backlog_samples"][0]["time_s"], 0)
+        self.assertIn("declared_window_end_plus_followup", summary["horizon_policy"])
+
+    def test_seventy_minute_cutoff_keeps_partial_authentication_frame_pending(self):
+        records = trace_fixture(count=1, aircraft=("ABCDEF",))
+        records[0]["relative_time_s"] = 3599.99999
+        channel = {"extra_starts": [], "extra_durations_s": [], "coverage_end_s": 4200,
+                   "summary": {"target_window_declared": True,
+                               "target_window_start_s": 0, "target_window_end_s": 3600}}
+        sign_ms = (4200 - records[0]["relative_time_s"] - FRAME_S / 2) * 1000
+        FakeVerifier.calls = 0
+        result = replay(records, profile=profile_fixture(sign_ms=sign_ms),
+                        replay_model="signed_detached", channel_trace=channel,
+                        followup_s=600, coverage_thresholds_s=[600])
+        summary = result["summary"]
+        self.assertEqual(summary["observation_horizon_s"], 4200)
+        self.assertEqual(summary["augmented_original_received_messages"], 1)
+        self.assertEqual(summary["auth_frames_transmitted"], 1)
+        self.assertEqual(summary["auth_frames_received"], 0)
+        self.assertEqual(summary["auth_frames_lost"], 0)
+        self.assertEqual(summary["auth_frames_in_flight_at_horizon"], 1)
+        self.assertEqual(summary["unresolved_messages"], 1)
+        self.assertEqual(summary["definitive_failure_messages"], 0)
+        self.assertEqual(FakeVerifier.calls, 0)
+        coverage = summary["threshold_coverage"][0]
+        self.assertEqual(coverage["source_eligible_messages"], 1)
+        self.assertEqual(coverage["receipt_eligible_messages"], 0)
+        self.assertTrue(result["events"][0]["outcome"].startswith("pending"))
+
+    def test_declared_window_does_not_extend_cutoff_for_jitter_or_partial_ordinary_frame(self):
+        records = trace_fixture(count=1, aircraft=("ABCDEF",))
+        records[0]["relative_time_s"] = 9.99999
+        channel = {"extra_starts": [], "extra_durations_s": [], "coverage_end_s": 10,
+                   "summary": {"target_window_declared": True,
+                               "target_window_start_s": 0, "target_window_end_s": 10}}
+        result = replay(records, profile=profile_fixture(sign_ms=1000), replay_model="signed_detached",
+                        channel_trace=channel, followup_s=0, receive_jitter_ms=100,
+                        coverage_thresholds_s=[1])
+        summary = result["summary"]
+        self.assertEqual(summary["observation_horizon_s"], 10)
+        self.assertEqual(summary["ordinary_frames_in_flight_at_horizon"], 1)
+        self.assertEqual(summary["ordinary_frames_rf_lost"], 0)
+        self.assertEqual(summary["augmented_original_received_messages"], 0)
+        self.assertEqual(summary["ordinary_airtime_seconds_followup"], 0)
+        self.assertEqual(summary["unresolved_messages"], 1)
+
     def test_detached_group_transmits_before_collection_and_signing_complete(self):
         records = trace_fixture(count=20, spacing=0.5, aircraft=("ABCDEF",))
         result = replay(records, interval=20, profile=profile_fixture(sign_ms=200),

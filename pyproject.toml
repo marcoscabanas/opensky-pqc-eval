@@ -20,7 +20,6 @@ crypto = ["cryptography>=50.0.0", "liboqs-python>=0.16.0"]
 package-dir = {"" = "."}
 packages = [
   "src",
-  "src.analysis",
   "src.processing",
   "src.experiment",
   "src.crypto",

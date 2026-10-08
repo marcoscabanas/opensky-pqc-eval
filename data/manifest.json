@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "windows": {
+    "daytime": {
+      "status": "awaiting_dataset",
+      "timestamp_mode": null,
+      "recording_start": null,
+      "recording_end": null,
+      "source": null,
+      "observation_domain": null,
+      "notes": "Complete this entry from acquisition metadata; timestamps must use explicit seconds. Planned recording: 60-minute target window plus 10-minute authentication follow-up."
+    },
+    "nighttime": {
+      "status": "awaiting_dataset",
+      "timestamp_mode": null,
+      "recording_start": null,
+      "recording_end": null,
+      "source": null,
+      "observation_domain": null,
+      "notes": "Complete this entry from acquisition metadata; timestamps must use explicit seconds. Planned recording: 60-minute target window plus 10-minute authentication follow-up."
+    }
+  }
+}

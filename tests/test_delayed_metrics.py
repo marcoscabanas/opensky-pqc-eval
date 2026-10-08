@@ -12,6 +12,27 @@ def records(times, aircraft=None):
 
 
 class DelayedMetricsTest(unittest.TestCase):
+    def test_declared_capture_window_preserves_quiet_edges_and_end_boundary(self):
+        result = summarize(records([2, 8]), [True, True], [True, True], [2, 8], [5, 10],
+                           ["modeled_authenticated"] * 2, horizon=12, thresholds_s=[1],
+                           capture_window=(0, 10))
+        self.assertEqual(result["capture_start_s"], 0)
+        self.assertEqual(result["capture_end_s"], 10)
+        self.assertEqual(result["capture_duration_s"], 10)
+        self.assertEqual(result["followup_after_capture_s"], 2)
+        info = result["aircraft_freshness"][0]["authenticated"]
+        self.assertEqual(info["fresh_update_count_within_capture"], 1)
+        self.assertEqual(info["known_seconds"], 5)
+        self.assertEqual(info["unknown_seconds"], 5)
+        self.assertEqual(info["age_at_capture_end_s"], 8)
+        self.assertEqual(info["age_at_horizon_s"], 4)
+
+    def test_invalid_declared_capture_window_is_rejected(self):
+        for window in ((0, 8), (3, 10), (0, 0), (-1, 10), (0,), (True, 10), (0, 13)):
+            with self.subTest(window=window), self.assertRaises(ValueError):
+                summarize(records([2, 8]), [True, True], [True, True], [2, 8], [None, None],
+                          ["pending_signing"] * 2, horizon=12, thresholds_s=[1], capture_window=window)
+
     def test_success_after_five_seconds_is_authenticated_and_has_both_delays(self):
         result = summarize(records([0, 10]), [True, True], [True, True], [.2, 10.2],
                            [6, 18], ["modeled_authenticated"] * 2, horizon=20, thresholds_s=[5, 10])

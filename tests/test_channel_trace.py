@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from src.experiment.channel_trace import FRAME_S, load_channel_trace, validate_coverage
+from src.experiment.channel_trace import FRAME_S, load_channel_trace, replay_window, validate_coverage
 
 
 class ChannelTraceTests(unittest.TestCase):
@@ -99,6 +99,48 @@ class ChannelTraceTests(unittest.TestCase):
         result = self.load(events=self.events + [extra])
         self.assertAlmostEqual(result["summary"]["non_target_offered_airtime_s"], 120e-6)
         self.assertEqual(result["summary"]["non_target_offered_airtime_within_target_window_s"], 0)
+
+    def test_declared_target_window_accounts_for_quiet_edges_and_is_half_open(self):
+        trace = [{**row, "relative_time_s": row["relative_time_s"] + 2,
+                  "timestamp": row["timestamp"] + 2} for row in self.trace]
+        events = [{**row, "relative_time_s": row["relative_time_s"] + 2} for row in self.events]
+        events += [{"event_id": "before-first-target", "relative_time_s": 0.5, "duration_s": 64e-6},
+                   {"event_id": "after-last-target", "relative_time_s": 9.5, "duration_s": 64e-6},
+                   {"event_id": "followup-start", "relative_time_s": 10, "duration_s": 64e-6}]
+        result = self.load(trace=trace, events=events,
+                           header={**self.header, "target_window_start_s": 0, "target_window_end_s": 10})
+        summary = result["summary"]
+        self.assertTrue(summary["target_window_declared"])
+        self.assertEqual(summary["target_window_duration_s"], 10)
+        self.assertEqual(summary["non_target_frames_within_target_window"], 2)
+        self.assertAlmostEqual(summary["total_offered_load_within_target_window"], (240e-6 + 128e-6) / 10)
+
+    def test_invalid_declared_target_windows_fail(self):
+        for updates in ({"target_window_start_s": 0},
+                        {"target_window_end_s": 2},
+                        {"target_window_start_s": 0, "target_window_end_s": 0},
+                        {"target_window_start_s": 0.1, "target_window_end_s": 2},
+                        {"target_window_start_s": 0, "target_window_end_s": 1},
+                        {"target_window_start_s": 0, "target_window_end_s": 62}):
+            with self.subTest(updates=updates), self.assertRaises(ValueError):
+                self.load(header={**self.header, **updates})
+
+    def test_replay_window_preserves_legacy_and_uses_fixed_declared_cutoff(self):
+        self.assertEqual(replay_window(self.trace, None, 60), (0, 1, 61 + FRAME_S))
+        channel = self.load(header={**self.header, "target_window_start_s": 0,
+                                    "target_window_end_s": 10})
+        self.assertEqual(replay_window(self.trace, channel, 5, 2000), (0, 10, 15))
+        validate_coverage(channel, replay_window(self.trace, channel, 5)[2])
+        self.assertAlmostEqual(replay_window(self.trace, None, 60, 2000)[2], 63 + FRAME_S)
+
+    def test_replay_window_rejects_invalid_durations_and_targets_outside_window(self):
+        channel = {"summary": {"target_window_declared": True,
+                               "target_window_start_s": 0, "target_window_end_s": 1}}
+        with self.assertRaisesRegex(ValueError, "half-open"):
+            replay_window(self.trace, channel, 5)
+        for followup in (-1, True, float("nan")):
+            with self.subTest(followup=followup), self.assertRaises(ValueError):
+                replay_window(self.trace, None, followup)
 
     def test_invalid_header_event_numbers_and_identifiers_fail(self):
         headers = [{**self.header, key: value} for key, value in [

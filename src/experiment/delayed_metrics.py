@@ -69,7 +69,7 @@ def _mask(values, count, label):
     return [bool(value) for value in result]
 
 
-def _information_age(events, start, end, horizon):
+def _information_age(events, start, end, horizon, *, half_open=False):
     """Integrate age only after first known information; old arrivals never regress it."""
     events = sorted(events)
     updates = []
@@ -85,7 +85,7 @@ def _information_age(events, start, end, horizon):
     first_known = None
     latest_at_end = None
     for index, (arrival, source) in enumerate(updates):
-        if arrival > end:
+        if (arrival >= end if half_open else arrival > end):
             break
         first_known = max(start, arrival) if first_known is None else first_known
         latest_at_end = source
@@ -110,13 +110,14 @@ def _information_age(events, start, end, horizon):
         "maximum_age_s": maximum,
         "age_at_capture_end_s": None if latest_at_end is None else end - latest_at_end,
         "age_at_horizon_s": None if latest_at_horizon is None else horizon - latest_at_horizon,
-        "fresh_update_count_within_capture": sum(start <= arrival <= end for arrival, _ in updates),
+        "fresh_update_count_within_capture": sum(start <= arrival and
+            (arrival < end if half_open else arrival <= end) for arrival, _ in updates),
     }
 
 
 def summarize(records, baseline_received, augmented_received, reception_times,
               authenticated_at, message_outcomes, *, horizon, thresholds_s,
-              baseline_reception_times=None, ordinary_tx_delays=None):
+              baseline_reception_times=None, ordinary_tx_delays=None, capture_window=None):
     """Summarize paired reception and authentication observed by ``horizon``.
 
     All arrays follow ``records`` order; missing authentication times are NaN
@@ -130,9 +131,10 @@ def summarize(records, baseline_received, augmented_received, reception_times,
     threshold while remaining unresolved for eventual authentication.
 
     Freshness integrates the age of the newest known source observation over
-    the capture window [first source timestamp, last source timestamp], per
-    aircraft. Unknown initial time is reported separately, never assigned zero
-    age. Interarrival gaps compare receptions from the same aircraft only.
+    the declared half-open ``capture_window=(start,end)``, or the legacy first
+    through last source interval when omitted, per aircraft. Unknown initial
+    time is reported separately, never assigned zero age. Interarrival gaps
+    compare receptions from the same aircraft only.
     """
     records = list(records)
     if not records:
@@ -146,6 +148,12 @@ def summarize(records, baseline_received, augmented_received, reception_times,
     if any(not isinstance(record.get("icao"), str) or not record["icao"] for record in records):
         raise ValueError("Every source record requires an aircraft identifier.")
     start, end = min(source_times), max(source_times)
+    if capture_window is not None:
+        if not isinstance(capture_window, (tuple, list)) or len(capture_window) != 2:
+            raise ValueError("capture_window must contain its start and end.")
+        start, end = [_number(value, "capture window bound") for value in capture_window]
+        if start < 0 or end <= start or min(source_times) < start or max(source_times) >= end:
+            raise ValueError("Declared capture window must be positive and contain all source emissions in [start,end).")
     horizon = _number(horizon, "horizon")
     if horizon < end:
         raise ValueError("The observation horizon must cover all source emissions.")
@@ -258,7 +266,7 @@ def summarize(records, baseline_received, augmented_received, reception_times,
             "authenticated": [(authenticated[index], source_times[index]) for index in indexes if success[index]],
         }
         for kind, events in streams.items():
-            info = _information_age(events, start, end, horizon)
+            info = _information_age(events, start, end, horizon, half_open=capture_window is not None)
             row[kind] = info
             pooled[kind].append(info)
             arrivals = sorted(arrival for arrival, _ in events)
