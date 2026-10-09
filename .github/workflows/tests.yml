@@ -70,8 +70,13 @@ jobs:
       - name: Verify the public commands do not depend on archived data
         run: |
           python run_experiment.py --help
+          python scripts/00_capture.py --help
           python scripts/01_prepare.py --help
           python scripts/02_sign.py --help
           python scripts/03_replay.py --help
           python scripts/04_report.py --help
           python scripts/05_compare.py --help
+          python scripts/06_paper_figures.py --help
+          python scripts/07_methodology_figures.py --help
+          python scripts/08_compare_reference.py --help
+          python scripts/restore_artifacts.py --help

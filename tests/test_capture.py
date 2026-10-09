@@ -2,7 +2,6 @@
 
 import contextlib
 import hashlib
-import importlib.util
 import io
 import json
 from pathlib import Path
@@ -12,10 +11,7 @@ import unittest
 from unittest.mock import patch
 
 
-spec = importlib.util.spec_from_file_location(
-    "raw_capture", Path(__file__).resolve().parents[1] / "scripts" / "00_capture.py")
-recorder = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(recorder)
+from scripts._support import capture as recorder
 
 
 class FakeClock:

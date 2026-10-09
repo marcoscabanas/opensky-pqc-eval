@@ -41,6 +41,14 @@ def report(records, *, scenarios=None, intervals=(1,), profile=None, observed=0,
 
 
 class ResourcePreflightTest(unittest.TestCase):
+    def test_observed_capture_keeps_radio_demand_and_bounded_events(self):
+        records = trace_fixture(count=6, spacing=0.2)
+        clear = report(records)["cases"][0]
+        capture = report(records, scenarios=[scenario(channel_mode="observed_capture")])["cases"][0]
+        for key in ("auth_frames_lower", "auth_frames_upper", "fixed_events"):
+            self.assertEqual(capture[key], clear[key])
+        self.assertLessEqual(capture["processed_events_lower"], capture["processed_events_upper"])
+
     def test_exact_radio_counts_match_engine_with_contention_and_cutoffs(self):
         rng = random.Random(3017)
         for trial in range(80):

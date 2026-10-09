@@ -66,6 +66,46 @@ def replay(records=None, interval=1, profile=None, workload=None, channel_trace=
 
 
 class SignedReplayTest(unittest.TestCase):
+    def test_observed_capture_preserves_received_baseline_and_repeats_same_seed(self):
+        # Two aircraft transmit together. Their observed ordinary receptions
+        # remain accepted; their later, coincident signature fragments compete.
+        records = trace_fixture(count=1, spacing=0, aircraft=("ABCDEF", "123456"), offset=0)
+        options = dict(channel_mode="observed_capture", replay_model="signed_detached",
+                       channel_trace={"extra_starts": [], "extra_durations_s": [], "coverage_end_s": 3,
+                                      "summary": {"target_window_declared": True,
+                                                  "target_window_start_s": 0, "target_window_end_s": 1}})
+        result = replay(records, **options)
+        self.assertEqual(result, replay(records, **options))
+        summary = result["summary"]
+        self.assertEqual(summary["baseline_original_received_messages"], 2)
+        self.assertEqual(summary["augmented_original_received_messages"], 2)
+        self.assertGreater(summary["auth_frames_lost"], 0)
+        self.assertEqual(summary["authenticated_messages"], 0)
+        self.assertEqual(summary["channel_summary"]["baseline_reception_basis"],
+                         "conditioned_on_observed_success")
+
+    def test_interval_reporting_counts_jobs_between_snapshots_without_changing_replay(self):
+        records = trace_fixture(count=3, spacing=10, aircraft=("ABCDEF",))
+        for row in records:
+            row["relative_time_s"] += 10
+        channel = {"extra_starts": [], "extra_durations_s": [], "coverage_end_s": 4200,
+                   "summary": {"target_window_declared": True,
+                               "target_window_start_s": 0, "target_window_end_s": 3600}}
+        options = dict(profile=profile_fixture(sign_ms=5.9), replay_model="signed_detached",
+                       channel_trace=channel, followup_s=600)
+        actual = replay(records, **options)
+        summary = actual["summary"]
+        self.assertTrue(all(row["sender_unfinished_groups"] == 0 for row in summary["backlog_samples"]))
+        intervals = summary["backlog_interval_summaries"]
+        self.assertEqual(sum(row["signing_completed_groups"] for row in intervals), 3)
+        self.assertEqual(sum(row["verification_completed_groups"] for row in intervals), 3)
+        self.assertEqual(intervals[0]["sender_unfinished_groups_max"], 1)
+        self.assertAlmostEqual(intervals[0]["sender_unfinished_groups_mean"] * 60, 3 * .0059)
+        with patch.object(signed_replay, "summarize_work_intervals", return_value=[]):
+            without_report = replay(records, **options)
+        actual["summary"]["backlog_interval_summaries"] = []
+        self.assertEqual(actual, without_report)
+
     def test_receiver_retention_shortcut_matches_general_receiver_with_expiry(self):
         fast = signed_replay._ReplayReceiver(1, 0.1)
         reference = signed_replay.ReplayReceiver(1, 0.1)

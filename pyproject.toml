@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "opensky-pqc-eval"
 version = "0.1.0"
-description = "Post-quantum signature evaluation for ADS-B authentication using OpenSky capture data."
+description = "Post-quantum signature evaluation for ADS-B authentication using decoded Mode S recordings from TU Delft."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

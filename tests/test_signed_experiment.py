@@ -8,18 +8,18 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.experiment import signed_experiment as experiment
-from src.experiment.replay_artifacts import load_scenarios
+from src.experiment.replay_artifacts import load_scenarios, scenario_seeds, validate_replay_scenario
 from src.experiment.signed_replay import simulate as real_simulate
 
 
 class SignedConfigurationTests(unittest.TestCase):
-    def test_full_matrix_declares_deterministic_detached_rate_sensitivity(self):
+    def test_full_matrix_declares_capture_replicates_and_single_control_runs(self):
         scenarios, seeds = load_scenarios(Path("config/signed_replay_scenarios.json"))
-        self.assertEqual(seeds, [1])
+        self.assertEqual(seeds, [1, 2, 3, 4, 5])
         self.assertEqual(len(scenarios), 8)
         self.assertEqual({(s["parameters"]["channel_mode"], s["parameters"]["auth_frames_per_second"])
                           for s in scenarios},
-                         {(mode, rate) for mode in ("independent", "destructive_overlap")
+                         {(mode, rate) for mode in ("independent", "observed_capture")
                           for rate in (10, 50, 100)})
         for scenario in scenarios:
             parameters = scenario["parameters"]
@@ -31,6 +31,11 @@ class SignedConfigurationTests(unittest.TestCase):
             self.assertEqual(parameters["background_frames_per_second"], 0)
             self.assertEqual(parameters["receiver_workers"],
                              4 if scenario["name"] == "detached_independent_r50_workers4" else 1)
+            self.assertEqual(scenario_seeds(scenario, seeds),
+                             seeds if parameters["channel_mode"] == "observed_capture" else [1])
+            self.assertEqual(validate_replay_scenario({k: v for k, v in parameters.items()
+                                                      if k != "replay_model"})["channel_mode"],
+                             parameters["channel_mode"])
         by_name = {scenario["name"]: scenario for scenario in scenarios}
         baseline = by_name["detached_independent_r50"]
         parallel = by_name["detached_independent_r50_workers4"]
@@ -43,7 +48,26 @@ class SignedConfigurationTests(unittest.TestCase):
         self.assertEqual(args.scenarios, Path("config/signed_replay_scenarios.json"))
         self.assertEqual(args.intervals, [1, 5, 10, 20])
         active = json.loads(Path("config/experiment.json").read_text())["algorithms"]
-        self.assertEqual(len(active) * len(args.intervals) * len(scenarios) * len(seeds), 96)
+        self.assertEqual(len(active) * len(args.intervals)
+                         * sum(len(scenario_seeds(s, seeds)) for s in scenarios), 240)
+
+    def test_capture_validator_requires_conditioned_observed_traffic(self):
+        valid = {"channel_mode": "observed_capture"}
+        self.assertEqual(validate_replay_scenario(valid)["channel_mode"], "observed_capture")
+        for extra in ({"loss": {"kind": "iid", "probability": 0.01}},
+                      {"background_frames_per_second": 1}, {"unknown_capture_field": 1}):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                validate_replay_scenario({**valid, **extra})
+
+    def test_explicit_cli_seeds_override_every_selected_scenario(self):
+        scenarios, seeds = load_scenarios(Path("config/signed_replay_scenarios.json"), seeds=[7, 9])
+        self.assertEqual(seeds, [7, 9])
+        self.assertTrue(all(scenario_seeds(s, seeds) == [7, 9] for s in scenarios))
+
+    def test_invalid_per_scenario_seeds_are_rejected(self):
+        for seeds in ([], [1, 1], [-1], [True], "1"):
+            with self.subTest(seeds=seeds), self.assertRaises(ValueError):
+                scenario_seeds({"seeds": seeds}, [1, 2])
 
 
 @unittest.skipUnless(importlib.util.find_spec("cryptography"), "Actual ECDSA requires cryptography")
@@ -108,6 +132,28 @@ class SignedExperimentTests(unittest.TestCase):
                 patch("src.experiment.signed_replay.simulate", side_effect=AssertionError("must not replay")):
             experiment.run(self.args("--validate-only"))
         self.assertEqual(before, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.root.rglob("*") if p.is_file()})
+
+    def test_mixed_seed_counts_reuse_workloads_and_resume_exact_matrix(self):
+        self.scenarios["scenarios"].append({**self.scenarios["scenarios"][0], "name": "control", "seeds": [1]})
+        self.write_json("scenarios.json", self.scenarios)
+        with patch("src.experiment.signed_replay.simulate", wraps=real_simulate) as replay:
+            experiment.run(self.args())
+        self.assertEqual(replay.call_count, 6)
+        report = json.loads((self.root / "results/replay_summary.json").read_text())
+        self.assertEqual(len(report["provenance"]["signed_workloads"]), 2)
+        self.assertEqual({(r["scenario"], r["seed"]) for r in report["rows"]},
+                         {("fixture", 1), ("fixture", 2), ("control", 1)})
+        with patch("src.experiment.signed_workload._build", side_effect=AssertionError("must not sign")), \
+                patch("src.experiment.signed_replay.simulate", side_effect=AssertionError("must not replay")):
+            experiment.run(self.args("--validate-only"))
+        missing = [r for r in report["rows"] if not (r["scenario"] == "fixture" and r["seed"] == 2)]
+        with self.assertRaisesRegex(ValueError, "matrix"):
+            experiment._validate_rows(missing, report["parameters"]["scenarios"], ["ECDSA-P256"], [1, 2],
+                                      [1, 2], len(self.records))
+        extra = [*report["rows"], {**report["rows"][0], "scenario": "control", "seed": 2}]
+        with self.assertRaisesRegex(ValueError, "matrix"):
+            experiment._validate_rows(extra, report["parameters"]["scenarios"], ["ECDSA-P256"], [1, 2],
+                                      [1, 2], len(self.records))
 
     def interrupted_run(self):
         calls = 0

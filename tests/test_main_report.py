@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from src.experiment.main_report import (
-    case_metrics, compare_windows, coverage_rows, generate_report, signature_airtime_bounds,
+    aggregate_rows, case_metrics, compare_windows, coverage_rows, generate_report, signature_airtime_bounds,
 )
 from src.experiment import signed_experiment
 from src.processing.prepare_recording import prepare_recording
@@ -43,7 +43,23 @@ class ReportingMetricTests(unittest.TestCase):
 
     def report(self, point):
         return {"rows": [{"algorithm": "test", "interval_k": 1, "scenario": "test",
-                          "threshold_coverage": [point]}]}
+                          "seed": 1, "threshold_coverage": [point]}]}
+
+    def test_replicate_summary_does_not_sum_counts_or_pool_percentages(self):
+        rows = [{"algorithm": "A", "seed": seed, "messages": count, "eligible": eligible,
+                 "pct": 100 * count / eligible} for seed, count, eligible in ((1, 1, 2), (2, 9, 10))]
+        summary, = aggregate_rows(rows, ("algorithm",))
+        self.assertEqual(summary["seed_count"], 2)
+        self.assertEqual(summary["messages_mean"], 5)
+        self.assertEqual(summary["messages_min"], 1)
+        self.assertEqual(summary["messages_max"], 9)
+        self.assertEqual(summary["pct_mean"], 70)
+        self.assertNotEqual(summary["pct_mean"], 100 * 10 / 12)
+
+    def test_duplicate_replicate_cannot_silently_overwrite_a_seed(self):
+        with self.assertRaisesRegex(ValueError, "duplicate seed"):
+            aggregate_rows([{"case": "A", "seed": 1, "value": 2},
+                            {"case": "A", "seed": 1, "value": 3}], ("case",))
 
     def test_deadlines_keep_distinct_source_and_received_denominators(self):
         rows = coverage_rows(self.report(self.point()))
@@ -63,6 +79,21 @@ class ReportingMetricTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "denominator"):
             coverage_rows(self.report(point))
 
+    def test_deadline_sets_cannot_silently_omit_a_seed(self):
+        report = self.report(self.point())
+        changed = copy.deepcopy(report["rows"][0])
+        changed["seed"] = 2
+        changed["threshold_coverage"][0]["threshold_s"] = 20
+        report["rows"].append(changed)
+        with self.assertRaisesRegex(ValueError, "deadline sets"):
+            coverage_rows(report)
+
+    def test_deadline_sets_must_match_normalized_configuration(self):
+        report = self.report(self.point())
+        report["simulator_parameters"] = {"test": {"coverage_thresholds_s": [10, 20]}}
+        with self.assertRaisesRegex(ValueError, "deadline sets"):
+            coverage_rows(report)
+
 
 @unittest.skipUnless(importlib.util.find_spec("cryptography") and importlib.util.find_spec("matplotlib"),
                      "Real ECDSA and plot dependencies are required")
@@ -76,13 +107,17 @@ class MainReportIntegrationTests(unittest.TestCase):
         records = [{"trace_id": i + 1, "icao": "ABCDEF", "raw_msg": "8DABCDEF" + f"{i+1:020X}",
                     "timestamp": 1000 + i * .1, "relative_time_s": i * .1} for i in range(4)]
         raw = cls.root / "recording.jsonl"
-        raw.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+        raw_rows = [*records, {"raw_msg": "5DAAAAAA000000", "timestamp": 1000.004, "icao": "AAAAAA", "df": 11}]
+        raw.write_text("".join(json.dumps(r) + "\n" for r in raw_rows), encoding="utf-8")
         prepare_recording(raw, prepared, {"timestamp_mode": "unix_seconds", "recording_start": 1000,
                                          "recording_end": 1004}, target_duration_s=.4, followup_s=2)
-        scenarios = {"seeds": [1], "scenarios": [{"name": "fixture", "sender_profile": "fixture", "receiver_profile": "fixture",
+        scenarios = {"seeds": [1, 2, 3, 4, 5], "scenarios": [{"name": "fixture", "sender_profile": "fixture", "receiver_profile": "fixture", "seeds": [1],
             "parameters": {"replay_model": "signed_detached", "followup_s": 2, "max_batch_wait_s": None,
                            "channel_mode": "independent", "auth_frames_per_second": 5000,
                            "loss": {"kind": "iid", "probability": 0}, "record_events": False}}]}
+        scenarios["scenarios"].append({**scenarios["scenarios"][0], "name": "capture",
+            "parameters": {**scenarios["scenarios"][0]["parameters"], "channel_mode": "observed_capture"}})
+        scenarios["scenarios"][-1].pop("seeds")
         profiles = {"schema_version": 1, "profiles": {"fixture": {"id": "fixture", "label": "Fixture",
             "platform": "Generated test", "kind": "sensitivity_assumption", "algorithms": {"ECDSA-P256": {
                 "implementation": "SECP256R1", "equivalence": "assumed", "limitation": "Test input",
@@ -108,24 +143,37 @@ class MainReportIntegrationTests(unittest.TestCase):
 
     def test_signature_figures_and_full_case_tables_are_nonempty(self):
         for stem in ("01_traffic_by_df", "02_signature_cost", "02_signature_airtime_lower_bound", "03_channel_load", "04_ordinary_delivery",
-                     "05_authentication_deadlines", "05_authentication_deadlines_from_reception", "06_backlog", "06_backlog_timeline_01"):
-            for extension in ("png", "pdf", "svg"):
-                self.assertGreater((self.window / "figures" / f"{stem}.{extension}").stat().st_size, 1000)
-        text = (self.window / "report.md").read_text()
-        self.assertIn("Neither model establishes an empirical operational failure probability", text)
-        self.assertIn("conditional timing", text)
-        self.assertIn("Generated acquisition timing limitation", text)
-        self.assertIn("Results and sensitivity tables", text)
-        self.assertIn("Mean signature bytes", text)
-        self.assertIn("Median authentication delay", text)
-        self.assertNotIn("authentication_outcomes.png", text)
-        self.assertEqual(len((self.window / "figures/case_metrics.csv").read_text().splitlines()), 3)
+                     "05_authentication_deadlines", "05_authentication_deadlines_from_reception", "06_backlog_timeline_01", "06_backlog_timeline_02"):
+            self.assertGreater((self.window / "figures" / f"{stem}.pdf").stat().st_size, 1000)
+        self.assertFalse((self.window / "report.md").exists())
+        self.assertFalse(list((self.window / "figures").glob("*.png")))
+        self.assertFalse(list((self.window / "figures").glob("*.svg")))
+        self.assertFalse((self.window / "figures/06_backlog.pdf").exists())
+        manifest = json.loads((self.window / "figures/figure_manifest.json").read_text())
+        self.assertIn("conditional timing", manifest["label"])
+        self.assertEqual({Path(name).suffix for name in manifest["artifacts"]}, {".pdf", ".csv"})
+        self.assertEqual(self.report["provenance"]["analysis_context"]["recording_limitations"],
+                         ["Generated acquisition timing limitation."])
+        self.assertEqual(len((self.window / "figures/case_metrics.csv").read_text().splitlines()), 13)
+        self.assertEqual(len((self.window / "figures/case_summary.csv").read_text().splitlines()), 5)
+
+    def test_interval_tables_keep_each_seed_and_event_derived_fields(self):
+        import csv
+        with (self.window / "figures/backlog_intervals.csv").open() as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertTrue(rows)
+        self.assertIn("sender_unfinished_groups_mean", rows[0])
+        self.assertIn("verification_completed_groups", rows[0])
+        self.assertEqual({int(row["seed"]) for row in rows if row["scenario"] == "capture"}, {1, 2, 3, 4, 5})
+        self.assertEqual({int(row["seed"]) for row in rows if row["scenario"] == "fixture"}, {1})
 
     def test_manifest_validation_is_read_only_and_detects_changed_artifacts(self):
         before = {p: p.stat().st_mtime_ns for p in self.window.rglob("*") if p.is_file()}
-        generate_report(self.window, "Generated test", validate_only=True)
+        outputs = generate_report(self.window, "Generated test", validate_only=True)
+        self.assertEqual(outputs, {"figures_dir": str(self.window / "figures"),
+                                   "figure_manifest": str(self.window / "figures/figure_manifest.json")})
         self.assertEqual(before, {p: p.stat().st_mtime_ns for p in self.window.rglob("*") if p.is_file()})
-        path = self.window / "report.md"
+        path = self.window / "figures/case_summary.csv"
         original = path.read_bytes()
         try:
             path.write_bytes(original + b"changed")
@@ -150,14 +198,21 @@ class MainReportIntegrationTests(unittest.TestCase):
         output = self.root / "comparison"
         compare_windows(self.window, self.window, output)
         compare_windows(self.window, self.window, output, validate_only=True)
+        self.assertFalse((output / "report.md").exists())
+        self.assertGreater((output / "figures/07_window_comparison.pdf").stat().st_size, 1000)
+        self.assertFalse(list((output / "figures").glob("*.png")))
+        self.assertFalse(list((output / "figures").glob("*.svg")))
         import csv
         with (output / "figures/window_comparison.csv").open() as handle:
             rows = list(csv.DictReader(handle))
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 4)
         for row in rows:
             for key, value in row.items():
-                if key.startswith("difference_"):
+                if key.startswith("difference_") and not key.endswith("defined_seed_count"):
                     self.assertEqual(float(value), 0)
+        with (output / "figures/window_comparison_by_seed.csv").open() as handle:
+            raw_rows = list(csv.DictReader(handle))
+        self.assertEqual(len(raw_rows), 12)
 
     def test_comparison_rejects_different_scenarios_before_writing(self):
         changed = copy.deepcopy(self.report)

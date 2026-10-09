@@ -3,8 +3,8 @@
 This module runs the main study using real signatures and measured input bytes.
 Only one algorithm/grouping workload is held in memory at a time; its exact
 signature bytes are reused across receiver/channel scenarios. The declared
-deterministic experiment needs one replay per case; seeds are retained only for
-optional stochastic sensitivity studies.
+deterministic controls run once; stochastic channel scenarios reuse the same
+signatures for each explicitly declared random seed.
 """
 
 import argparse
@@ -15,18 +15,18 @@ from pathlib import Path
 import tempfile
 
 from src.experiment.channel_trace import load_channel_trace, validate_coverage, replay_window
-from src.experiment.model_support import validate_scenario
 from src.experiment.hardware_profiles import load_profiles, timing_samples_ms
 from src.experiment.io_support import load_json, load_trace
 from src.experiment.replay_artifacts import (
     SCHEMA_VERSION, SIGNED_REPLAY_MODELS, _digest, _file_evidence, _profile_evidence, _publish,
-    _source_evidence, load_scenarios, outputs_match,
+    _source_evidence, load_scenarios, outputs_match, scenario_seeds, validate_replay_scenario,
 )
 from src.runtime import RunLock
 
 
 def _validate_rows(rows, scenarios, algorithms, intervals, seeds, count):
-    expected = {(s["name"], a, k, seed) for s in scenarios for a in algorithms for k in intervals for seed in seeds}
+    expected = {(s["name"], a, k, seed) for s in scenarios for a in algorithms for k in intervals
+                for seed in scenario_seeds(s, seeds)}
     actual = [(r.get("scenario"), r.get("algorithm"), r.get("interval_k"), r.get("seed")) for r in rows]
     if len(actual) != len(expected) or set(actual) != expected:
         raise ValueError("Signed replay case matrix is incomplete or duplicated.")
@@ -116,7 +116,7 @@ def run(args):
     for scenario in scenarios:
         parameters = dict(scenario["parameters"])
         parameters.pop("replay_model")
-        parameters = validate_scenario(parameters)
+        parameters = validate_replay_scenario(parameters)
         if parameters["background_frames_per_second"]:
             raise ValueError("Observed channel traffic cannot be combined with synthetic background.")
         # Fail missing follow-up before spending time generating signatures.
@@ -172,7 +172,7 @@ def run(args):
     cache = args.workloads_dir or args.output_dir / "signed_workloads"
     rows, events, assumptions, workloads = [], [], [], {}
     policies = list(dict.fromkeys(normalized[item["name"]]["max_batch_wait_s"] for item in scenarios))
-    total = len(scenarios) * len(algorithms) * len(args.intervals) * len(seeds)
+    total = len(algorithms) * len(args.intervals) * sum(len(scenario_seeds(s, seeds)) for s in scenarios)
     for algorithm in algorithms:
         for interval in args.intervals:
             for wait in policies:
@@ -193,7 +193,7 @@ def run(args):
                     if configuration["max_batch_wait_s"] != wait:
                         continue
                     sender, receiver = (profiles[scenario[f"{role}_profile"]] for role in ("sender", "receiver"))
-                    for seed in seeds:
+                    for seed in scenario_seeds(scenario, seeds):
                         case = {"scenario": scenario["name"], "algorithm": algorithm,
                                 "interval_k": interval, "seed": seed}
                         checkpoint_identity = {"schema_version": 1, "request_sha256": request_hash,
@@ -201,7 +201,7 @@ def run(args):
                         checkpoint_path = args.output_dir / "cases" / request_hash / f"{_digest(case)}.json"
                         if checkpoint_path.exists() and not args.force:
                             checkpoint = _load_case(checkpoint_path, checkpoint_identity)
-                            _validate_rows([checkpoint["row"]], [scenario], [algorithm], [interval],
+                            _validate_rows([checkpoint["row"]], [{**scenario, "seeds": [seed]}], [algorithm], [interval],
                                            [seed], len(trace))
                             rows.append(checkpoint["row"])
                             assumptions.extend(checkpoint["assumptions"])
@@ -227,7 +227,7 @@ def run(args):
                                      "sender_timing_sample_kind": timing["sender"]["timing"]["sample_kind"],
                                      "receiver_timing_sample_kind": timing["receiver"]["timing"]["sample_kind"],
                                      "signature_sizing_basis": "actual_signed_context_and_raw_messages"}
-                        _validate_rows([row], [scenario], [algorithm], [interval], [seed], len(trace))
+                        _validate_rows([row], [{**scenario, "seeds": [seed]}], [algorithm], [interval], [seed], len(trace))
                         _save_case(checkpoint_path, {"identity": checkpoint_identity, "row": row,
                                    "assumptions": result.get("assumptions", []),
                                    "events": result.get("events", [])})
@@ -273,7 +273,8 @@ def parse_args(argv=None):
     parser.add_argument("--intervals", type=int, nargs="+", default=[1, 5, 10, 20])
     parser.add_argument("--algorithm", nargs="+")
     parser.add_argument("--scenario", nargs="+")
-    parser.add_argument("--seeds", type=int, nargs="+")
+    parser.add_argument("--seeds", type=int, nargs="+",
+                        help="Override both global and per-scenario seeds for every selected scenario.")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
     return parser, parser.parse_args(argv)

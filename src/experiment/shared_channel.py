@@ -15,6 +15,13 @@ overlap as a collision and gives 120 us for long Mode S frames (pp. 4--5):
 https://ntrs.nasa.gov/api/citations/20040171487/downloads/20040171487.pdf
 That source does not validate this model's single-domain all-destroy assumption.
 
+``observed_capture`` instead conditions recorded baseline reception on success
+and ignores observed--observed interference, including after target timing
+shifts. Authentication-related overlaps use one seeded random priority per
+frame: any higher-priority directly overlapping competitor defeats that frame.
+This uncalibrated capture sensitivity preserves an isolated pair's one survivor;
+it neither models received power nor repairs uncertain acquisition timestamps.
+
 Baseline-only and baseline-plus-authentication use identical original-message
 noise draws. Authentication uses a separate random stream. Gilbert-Elliott loss
 uses a shared continuous-time two-state environment with exponential good/bad
@@ -38,6 +45,8 @@ import math
 
 import numpy as np
 
+from .capture_channel import capture_masks
+
 
 FRAME_S = 120e-6
 SOURCE_URL = "https://ntrs.nasa.gov/api/citations/20040171487/downloads/20040171487.pdf"
@@ -45,6 +54,26 @@ _DRAW_CHUNK = 1_000_000
 _MAX_TRANSITIONS = 2_000_000
 _COLLISION_SORT_CHUNK = 1_000_000
 _COLLISION_BUCKET_S = 10.0
+
+_CAPTURE_ASSUMPTIONS = [
+    "Observed-capture conditions all recorded ordinary frames on successful baseline reception; observed-observed overlaps never invalidate them, including after modeled ordinary timing shifts.",
+    "Only overlaps involving authentication compete. Each frame gets one seeded pseudorandom priority; a frame fails if any directly overlapping competing frame has higher priority. Losing frames remain interferers.",
+    "An isolated competing pair has one equally likely survivor across seeds. A multi-frame overlap uses consistent frame priorities, not independent pairwise coin flips; non-overlapping local maxima may both survive.",
+    "Capture priorities are a SplitMix64 permutation of a SeedSequence-keyed frame-domain/input-index identity, so identities never tie and observed priorities remain stable across authentication scenarios.",
+    "This is an uncalibrated additional-authentication capture sensitivity, not a received-power, distance, decoder, or complete counterfactual RF reconstruction. Preserving observed success after timing shifts is an explicit conditioning assumption.",
+]
+
+
+def _capture_summary():
+    return {
+        "capture_model": "observed_success_conditioned_random_priority",
+        "capture_priority_generator": "SplitMix64 permutation; NumPy SeedSequence uint64 key; frame-domain/input-index identity",
+        "random_generator": "SplitMix64 capture priorities keyed by NumPy SeedSequence",
+        "baseline_reception_basis": "conditioned_on_observed_success",
+        "observed_observed_interference": "excluded_including_shifted_targets",
+        "capture_pair_rule": "higher_frame_priority_survives",
+        "capture_multiway_rule": "no_higher_priority_directly_overlapping_competitor",
+    }
 
 
 def _number(value, name, *, positive=False):
@@ -420,8 +449,8 @@ def evaluate_channel(
     if isinstance(seed, bool) or not isinstance(seed, (int, np.integer)) or seed < 0:
         raise ValueError("seed must be a nonnegative integer.")
     seed = int(seed)
-    if channel_mode not in {"independent", "destructive_overlap"}:
-        raise ValueError("channel_mode must be independent or destructive_overlap.")
+    if channel_mode not in {"independent", "destructive_overlap", "observed_capture"}:
+        raise ValueError("channel_mode must be independent, destructive_overlap, or observed_capture.")
     originals = _starts(original_starts, "original_starts", horizon)
     auth = _starts(auth_starts, "auth_starts", horizon)
     offsets = _auth_runs(auth, auth_run_offsets) if auth_run_offsets is not None else None
@@ -437,6 +466,10 @@ def evaluate_channel(
     _check_aircraft(original_aircraft, len(originals), "original_aircraft")
     _check_aircraft(auth_aircraft, len(auth), "auth_aircraft")
     parameters = _loss_parameters(loss)
+    if channel_mode == "observed_capture" and (
+        parameters != {"kind": "iid", "probability": 0.0} or background_rate != 0
+    ):
+        raise ValueError("observed_capture requires zero iid erasure and zero synthetic background.")
     transitions, initial_bad = _burst_environment(parameters, seed, horizon)
     original_noise = _noise_mask(originals, parameters, seed, 0, transitions, initial_bad)
     auth_noise = _noise_mask(auth, parameters, seed, 1, transitions, initial_bad)
@@ -452,6 +485,11 @@ def evaluate_channel(
         baseline_collisions = np.zeros(count_original, dtype=np.bool_)
         original_collisions = np.zeros(count_original, dtype=np.bool_)
         auth_collisions = np.zeros(count_auth, dtype=np.bool_)
+    elif channel_mode == "observed_capture":
+        baseline_collisions = np.zeros(count_original, dtype=np.bool_)
+        original_collisions, auth_collisions = capture_masks(
+            originals, auth, observed, observed_durations, seed, offsets,
+        )
     else:
         baseline_collisions, _ = _target_collision_masks(
             originals, np.empty(0), background, observed, observed_durations,
@@ -486,6 +524,10 @@ def evaluate_channel(
             "Observed interfering events are additional non-target RF transmissions and must exclude originals already included in the replay; their reception or decodability does not remove interference.",
             "Offered airtime sums full event durations, including event ends beyond the horizon; it is not measured channel occupancy and overlapping durations are counted separately.",
         ])
+    if channel_mode == "observed_capture":
+        assumptions[1] = "Observed-capture preserves observed baseline reception and compares seeded frame priorities only for overlaps involving authentication."
+        assumptions[3] = "Observed-observed overlaps are conditioned on successful reception; aircraft identifiers do not otherwise exempt authentication overlaps."
+        assumptions.extend(_CAPTURE_ASSUMPTIONS)
     result = {
         "original_success_baseline": baseline_success,
         "original_success_with_auth": original_success,
@@ -528,6 +570,8 @@ def evaluate_channel(
             "total_offered_airtime_baseline_s": baseline_airtime,
             "total_offered_airtime_with_auth_s": baseline_airtime + count_auth * FRAME_S,
         })
+    if channel_mode == "observed_capture":
+        result["summary"].update(_capture_summary())
     return result
 
 
@@ -599,6 +643,13 @@ def evaluate_shifted_channel(
             baseline.get("observed_durations_s", np.empty(0)), offsets,
         )
         shifted_collisions[transmitted] = target_collisions
+    elif channel_mode == "observed_capture":
+        target_collisions, auth_collisions = capture_masks(
+            shifted[transmitted], auth, baseline.get("observed_starts", np.empty(0)),
+            baseline.get("observed_durations_s", np.empty(0)), int(seed), offsets,
+            original_indices=np.flatnonzero(transmitted),
+        )
+        shifted_collisions[transmitted] = target_collisions
 
     baseline_success = baseline["original_success_baseline"]
     shifted_success = transmitted & ~(shifted_noise | shifted_collisions)
@@ -608,6 +659,8 @@ def evaluate_shifted_channel(
     baseline_collisions = baseline["original_collision_baseline"]
     assumptions = list(baseline["summary"]["assumptions"])
     assumptions[3] = "Recorded target times define the baseline; sender-model target times define the augmented scenario. Aircraft identifiers do not exempt same-aircraft overlaps from collisions."
+    if channel_mode == "observed_capture":
+        assumptions[3] = "Observed baseline reception is conditioned on success. Shifted targets retain that observed-observed exemption; only added authentication competes, without reconstructing a complete counterfactual receiver."
     assumptions[4] = "Paired runs share original-index uniform erasure draws, the temporal loss environment, observed interfering events, and synthetic background; authentication erasure draws use a separate random stream. Shifted times can encounter different environment states."
     assumptions.extend([
         "Additional target reception losses and gains include sender timing shifts and authentication traffic; deferred targets are counted separately from RF losses.",
@@ -637,7 +690,11 @@ def evaluate_shifted_channel(
         "net_original_reception_losses": int(np.count_nonzero(added_losses)) - int(np.count_nonzero(gains)),
         "additional_original_collisions_due_to_auth": int(np.count_nonzero(shifted_collisions & ~baseline_collisions)),
         "original_rf_losses_with_auth": int(np.count_nonzero(transmitted & ~shifted_success)),
-        "paired_loss_attribution": "sender deferral, shifted target timing, and added authentication traffic jointly",
+        "paired_loss_attribution": (
+            "sender deferral and authentication capture losses; observed-observed overlaps excluded even after target timing shifts"
+            if channel_mode == "observed_capture" else
+            "sender deferral, shifted target timing, and added authentication traffic jointly"
+        ),
         "assumptions": assumptions,
     })
     result = {

@@ -30,6 +30,41 @@ MODEL_FIELDS = {
 SIGNED_REPLAY_MODELS = {"signed_before_send", "signed_detached"}
 
 
+def validate_replay_scenario(scenario):
+    """Validate replay-only channel extensions without changing signing inputs.
+
+    ``model_support`` also defines grouping and is hashed into existing signed
+    workloads. Keep that module unchanged when adding a reception model: the
+    new model changes neither group membership nor the signed bytes.
+    """
+    from .model_support import validate_scenario
+
+    observed_capture = isinstance(scenario, dict) and scenario.get("channel_mode") == "observed_capture"
+    compatible = {**scenario, "channel_mode": "independent"} if observed_capture else scenario
+    parameters = validate_scenario(compatible)
+    if observed_capture:
+        if parameters["loss"] != {"kind": "iid", "probability": 0}:
+            raise ValueError("observed_capture requires zero independent erasure of observed traffic.")
+        if parameters["background_frames_per_second"] != 0:
+            raise ValueError("observed_capture requires recorded traffic, without synthetic background.")
+        parameters["channel_mode"] = "observed_capture"
+    return parameters
+
+
+def scenario_seeds(scenario, defaults):
+    """Return the exact declared replicates for one scenario.
+
+    Deterministic controls can declare one seed while stochastic channel
+    scenarios inherit the global replicate list. No seed is silently dropped.
+    """
+    seeds = scenario.get("seeds", defaults)
+    if (not isinstance(seeds, list) or not seeds
+            or any(type(seed) is not int or seed < 0 for seed in seeds)
+            or len(set(seeds)) != len(seeds)):
+        raise ValueError("Seeds must be a nonempty list of unique nonnegative integers.")
+    return list(seeds)
+
+
 def _canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
@@ -78,7 +113,7 @@ def load_scenarios(path, selected=None, seeds=None):
         raise ValueError("Scenario configuration must contain a scenarios list.")
     scenarios = {}
     for scenario in document["scenarios"]:
-        if not isinstance(scenario, dict) or set(scenario) - {"name", "sender_profile", "receiver_profile", "parameters", "description"}:
+        if not isinstance(scenario, dict) or set(scenario) - {"name", "sender_profile", "receiver_profile", "parameters", "description", "seeds"}:
             raise ValueError("Scenario entries must be objects with known fields.")
         name = scenario.get("name")
         if not isinstance(name, str) or not name.strip() or name in scenarios:
@@ -92,6 +127,8 @@ def load_scenarios(path, selected=None, seeds=None):
         model = _replay_model(parameters)
         if set(parameters) - (MODEL_FIELDS[model] | {"replay_model"}):
             raise ValueError(f"{name}: unknown scenario parameters for {model}.")
+        if "seeds" in scenario:
+            scenario_seeds(scenario, [])
         scenarios[name] = scenario
     if not scenarios:
         raise ValueError("At least one scenario is required.")
@@ -99,10 +136,12 @@ def load_scenarios(path, selected=None, seeds=None):
         if not selected or len(set(selected)) != len(selected) or set(selected) - set(scenarios):
             raise ValueError("Selected scenarios must be nonempty, unique and present in configuration.")
         scenarios = {name: scenarios[name] for name in selected}
-    seeds = document.get("seeds", [1]) if seeds is None else seeds
-    if (not isinstance(seeds, list) or not seeds or any(type(seed) is not int or seed < 0 for seed in seeds)
-            or len(set(seeds)) != len(seeds)):
-        raise ValueError("Seeds must be a nonempty list of unique nonnegative integers.")
+    override = seeds is not None
+    seeds = scenario_seeds({}, document.get("seeds", [1]) if seeds is None else seeds)
+    if override:
+        # An explicit CLI request overrides both global and per-scenario lists;
+        # persist that effective request in provenance rather than hiding it.
+        scenarios = {name: {**scenario, "seeds": list(seeds)} for name, scenario in scenarios.items()}
     return list(scenarios.values()), seeds
 
 

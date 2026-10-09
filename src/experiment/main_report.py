@@ -13,7 +13,9 @@ import os
 from pathlib import Path
 import tempfile
 
-from src.experiment.result_validation import LABELS, load_report, metric_matrix
+from src.experiment.result_validation import (
+    LABELS, grouped_rows, load_report, metric_matrix, metric_statistics, seed_statistics,
+)
 
 
 BACKLOG = {
@@ -43,8 +45,9 @@ def _percent(numerator, denominator):
 
 def _scenario_label(scenario):
     parameters = scenario["parameters"]
-    channel = ("Collision-free" if parameters["channel_mode"] == "independent"
-               else "Destructive overlap")
+    channel = {"independent": "No-interference control",
+               "observed_capture": "Observed baseline + random capture",
+               "destructive_overlap": "Destructive overlap (legacy)"}[parameters["channel_mode"]]
     label = f"{channel}\n{parameters['auth_frames_per_second']:g} auth frames/s/aircraft"
     if scenario.get("receiver_profile") == "assumed_receiver_1ms":
         label += "\nAssumed 1 ms verifier"
@@ -65,6 +68,7 @@ def case_metrics(row):
         raise ValueError("RF losses cannot exceed transmitted ordinary frames.")
     result = {
         "algorithm": row["algorithm"], "interval_k": row["interval_k"], "scenario": row["scenario"],
+        "seed": row["seed"],
         "source_messages": source, "ordinary_frames_transmitted": transmitted,
         "ordinary_frames_rf_lost": lost,
         "ordinary_frames_in_flight_at_horizon": row["ordinary_frames_in_flight_at_horizon"],
@@ -102,7 +106,11 @@ def case_metrics(row):
 
 def coverage_rows(report):
     """Preserve each deadline's actual eligible population, including zero cohorts."""
-    output = []
+    output, case_thresholds = [], {}
+    configured = {scenario["name"]: scenario["parameters"].get("coverage_thresholds_s")
+                  for scenario in report.get("parameters", {}).get("scenarios", [])}
+    for name, parameters in report.get("simulator_parameters", {}).items():
+        configured[name] = parameters.get("coverage_thresholds_s", configured.get(name))
     for row in report["rows"]:
         thresholds = set()
         for point in row["threshold_coverage"]:
@@ -120,10 +128,15 @@ def coverage_rows(report):
                 if (actual is None) != (expected is None) or (actual is not None and not math.isclose(actual, expected)):
                     raise ValueError("Deadline authentication fraction disagrees with its denominator.")
                 output.append({"algorithm": row["algorithm"], "interval_k": row["interval_k"],
-                               "scenario": row["scenario"], "anchor": anchor, "deadline_s": threshold,
+                               "scenario": row["scenario"], "seed": row["seed"],
+                               "anchor": anchor, "deadline_s": threshold,
                                "eligible_messages": eligible, "authenticated_messages": authenticated,
                                "excluded_due_to_followup_messages": point[f"{anchor}_ineligible_due_to_followup_messages"],
                                "authenticated_pct_eligible": _percent(authenticated, eligible)})
+        key = row["algorithm"], row["interval_k"], row["scenario"]
+        declared = configured.get(row["scenario"])
+        if (declared is not None and thresholds != set(declared)) or thresholds != case_thresholds.setdefault(key, thresholds):
+            raise ValueError("Authentication deadline sets must match configuration and every declared seed.")
     return output
 
 
@@ -161,6 +174,46 @@ def _write_csv(path, rows):
         writer.writerows(rows)
 
 
+def aggregate_rows(rows, keys):
+    """Summarize each metric across seeds without pooling or summing counts."""
+    groups = {}
+    for row in rows:
+        groups.setdefault(tuple(row[key] for key in keys), []).append(row)
+    output = []
+    for key, members in groups.items():
+        seeds = [row["seed"] for row in members]
+        if len(seeds) != len(set(seeds)):
+            raise ValueError("Aggregate rows contain a duplicate seed.")
+        result = {**dict(zip(keys, key)), "seed_count": len(seeds),
+                  "seeds": ";".join(str(seed) for seed in sorted(seeds))}
+        fields = [field for field in members[0] if field not in (*keys, "seed")]
+        for field in fields:
+            stats = seed_statistics(row[field] for row in members)
+            for statistic in ("mean", "min", "max", "defined_seed_count"):
+                result[f"{field}_{statistic}"] = stats[statistic]
+        output.append(result)
+    return output
+
+
+def _format_stats(stats, digits=2, *, compact=False):
+    if not stats or stats["mean"] is None:
+        return "—" if compact else "n/a"
+    def fmt(value):
+        if not compact:
+            return f"{value:,.{digits}f}"
+        if value and (abs(value) < .01 or abs(value) >= 1000):
+            coefficient, exponent = f"{value:.1e}".split("e")
+            return f"{coefficient.rstrip('0').rstrip('.')}e{int(exponent)}"
+        return f"{value:.3g}"
+    result = fmt(stats["mean"])
+    if stats["seed_count"] > 1 and (not compact or stats["min"] != stats["max"]):
+        separator = "," if compact else ", "
+        result += ("\n" if compact else " ") + f"[{fmt(stats['min'])}{separator}{fmt(stats['max'])}]"
+    if stats["defined_seed_count"] < stats["seed_count"]:
+        result += f" ({stats['defined_seed_count']}/{stats['seed_count']} defined)"
+    return result
+
+
 @contextmanager
 def _plotting():
     previous = {key: os.environ.get(key) for key in ("MPLCONFIGDIR", "XDG_CACHE_HOME")}
@@ -186,17 +239,13 @@ def _save(plt, fig, directory, stem, title, note):
     fig.suptitle(title, fontsize=13)
     fig.text(.02, .015, textwrap.fill(note, max(70, int(fig.get_figwidth() * 15))), va="bottom", fontsize=8)
     fig.tight_layout(rect=(0, .10, 1, .95))
-    paths = []
-    for extension in ("png", "pdf", "svg"):
-        path = directory / f"{stem}.{extension}"
-        metadata = {"Date": None} if extension == "svg" else ({"CreationDate": None, "ModDate": None} if extension == "pdf" else None)
-        fig.savefig(path, dpi=160, facecolor="white", metadata=metadata)
-        paths.append(path)
+    path = directory / f"{stem}.pdf"
+    fig.savefig(path, dpi=160, facecolor="white", metadata={"CreationDate": None, "ModDate": None})
     plt.close(fig)
-    return paths
+    return [path]
 
 
-def _heatmap(plt, axis, values, rows, columns, title, maximum=None, signed=False):
+def _heatmap(plt, axis, values, rows, columns, title, maximum=None, signed=False, annotations=None):
     import numpy as np
     array = np.array([[np.nan if value is None else value for value in row] for row in values], dtype=float)
     finite = array[np.isfinite(array)]
@@ -209,7 +258,8 @@ def _heatmap(plt, axis, values, rows, columns, title, maximum=None, signed=False
     for y, row in enumerate(values):
         for x, value in enumerate(row):
             ink = "#222222" if value is None or (abs(value) < .5 * vmax if signed else value > .55 * vmax) else "white"
-            axis.text(x, y, "—" if value is None else f"{value:.3g}", ha="center", va="center", fontsize=7, color=ink)
+            caption = annotations[y][x] if annotations is not None else ("—" if value is None else f"{value:.3g}")
+            axis.text(x, y, caption, ha="center", va="center", fontsize=6 if annotations else 7, color=ink)
     plt.colorbar(plot, ax=axis, fraction=.04, pad=.03)
 
 
@@ -218,9 +268,12 @@ def _case_figure(plt, report, output, stem, title, specs, note, label):
     names = {s["name"]: _scenario_label(s) for s in report["parameters"]["scenarios"]}
     for axis, (caption, getter, maximum) in zip(axes.flat, specs):
         cases, scenarios, values = metric_matrix(report, getter)
+        stats = metric_statistics(report, getter)
+        annotations = [[_format_stats(stats[a, k, s], compact=True) for s in scenarios] for a, k in cases]
         _heatmap(plt, axis, values, [f"{LABELS.get(a, a)} / k={k}" for a, k in cases],
-                 [names[s] for s in scenarios], caption, maximum)
-    return _save(plt, fig, output, stem, f"{label}: {title}", note)
+                 [names[s] for s in scenarios], caption, maximum, annotations=annotations)
+    return _save(plt, fig, output, stem, f"{label}: {title}",
+                 "Cells show replicate mean [observed minimum, maximum] when repeated; exactly zero-width ranges are omitted. Ranges are not confidence intervals. " + note)
 
 
 def _source_files(directory, report):
@@ -270,7 +323,7 @@ def _draw_traffic(plt, traffic, figures, label):
         axis.set_ylabel(caption)
         axis.grid(alpha=.2)
     axes[0].legend(loc="upper left", ncol=min(6, len(dfs)))
-    axes[1].set_xlabel("Minutes since recording start (shaded region: authentication follow-up)")
+    axes[1].set_xlabel("Minutes since recording start (shaded region: recording after target selection)")
     note = "Each curve is that DF's cumulative count, measured at bin ends. Encoded bytes include parity, exclude RF preambles, and are neither JSON file size nor radio airtime. This recording cannot represent transmissions the receiver did not observe."
     if traffic.get("timing_warning"):
         note = traffic["timing_warning"] + " " + note
@@ -298,7 +351,8 @@ def plot_traffic(prepared_dir: Path, output_dir: Path, label: str):
 
 def _manifest(directory, sources, label, paths, validate_only):
     path = directory / "figures/figure_manifest.json"
-    identity = {"schema_version": 1, "label": label, "source_files": sources, "reporter_sha256": _hash(__file__)}
+    identity = {"schema_version": 1, "label": label, "source_files": sources, "reporter_sha256": _hash(__file__),
+                "validation_sha256": _hash(Path(__file__).with_name("result_validation.py"))}
     if validate_only:
         saved = json.loads(path.read_text(encoding="utf-8"))
         if any(saved.get(key) != value for key, value in identity.items()):
@@ -312,136 +366,7 @@ def _manifest(directory, sources, label, paths, validate_only):
     else:
         identity["artifacts"] = {str(p.relative_to(directory)): _hash(p) for p in paths}
         path.write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
-    return {"report_path": str(directory / "report.md"), "figure_manifest": str(path)}
-
-
-def _findings(report, costs):
-    """Describe matched, predeclared comparisons without selecting winning cases."""
-    scenarios = report["parameters"]["scenarios"]
-    core = [s for s in scenarios if s["parameters"].get("receiver_workers", 1) == 1
-            and s.get("receiver_profile") != "assumed_receiver_1ms"]
-    if not core:
-        return ["## Results and sensitivity tables", "",
-                "This configuration has no single-worker reference scenario. Use the complete case and deadline tables above for its explicitly configured comparisons.", ""]
-    rates = sorted({s["parameters"]["auth_frames_per_second"] for s in core})
-    reference_rate = 50 if 50 in rates else rates[len(rates) // 2]
-    indexed = {(r["algorithm"], r["interval_k"], r["scenario"]): r for r in report["rows"]}
-    def row(algorithm, k, rate, mode, candidates=core):
-        matches = [s for s in candidates if s["parameters"]["auth_frames_per_second"] == rate
-                   and s["parameters"]["channel_mode"] == mode]
-        return indexed.get((algorithm, k, matches[0]["name"])) if len(matches) == 1 else None
-    def number(value, digits=2):
-        return "n/a" if value is None else f"{value:,.{digits}f}"
-    def authenticated(item):
-        return None if item is None else 100 * item["authenticated_messages"] / item["source_messages"]
-    def within(item, threshold):
-        points = [] if item is None else [p for p in item["threshold_coverage"] if p["threshold_s"] == threshold]
-        fraction = points[0]["source_authentication_fraction"] if points else None
-        return None if fraction is None else 100 * fraction
-    lines = ["## Results and sensitivity tables", "",
-             "These comparisons retain every algorithm and grouping size. Percentages at cutoff divide by all target messages, including unsigned tails, failures and pending work. The cutoff is after the recorded follow-up, not a real-time authentication deadline.", "",
-             "### Signature and radio demand", "",
-             "Required fragments include the signed association metadata and fragment headers. Required airtime is summed over all complete signing groups and divided by the one-hour target window; it may exceed 100% and does not measure occupied spectrum.", "",
-             "| Algorithm | k | Signed groups | Mean signature bytes | Mean fragments/group | Required authentication airtime (%) |",
-             "| --- | ---: | ---: | ---: | ---: | ---: |"]
-    for cost in costs:
-        item = next(r for r in report["rows"] if r["algorithm"] == cost["algorithm"]
-                    and r["interval_k"] == cost["interval_k"])
-        demand = 100 * item["prototype_required_authentication_airtime_s"] / item["trace_duration_s"]
-        lines.append(f"| {LABELS.get(cost['algorithm'], cost['algorithm'])} | {cost['interval_k']} | "
-                     f"{cost['signed_groups']:,} | {number(cost['mean_signature_bytes_per_group'])} | "
-                     f"{number(cost['mean_required_frames_per_group'])} | {number(demand)} |")
-    lines += ["", "The prototype uses three signature-stream bytes per fragment after its four-byte header. Its signed association information also grows with group size, so doubling k does not necessarily halve total radio demand. The separate seven-byte lower-bound figure removes this protocol overhead.", "",
-              "### Signing and group formation", "",
-              f"The table uses the collision-free {reference_rate:g} frames/s reference scenario. Signing service is the published-profile processing time per group, not this computer's measured runtime. Formation wait is per message in complete groups; signing-queue wait includes only groups whose signing starts by the cutoff. Unstarted groups are retained in the unfinished count. Ordinary messages transmit while their retained copies wait for signing.", "",
-              "| Algorithm | k | Sign service (ms/group) | Formation wait p95 (s) | Signing queue p95 (s) | Signing unfinished at hour end | Signing unfinished at cutoff | Unsigned tail messages |",
-              "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
-    for cost in costs:
-        a, k = cost["algorithm"], cost["interval_k"]
-        item = row(a, k, reference_rate, "independent")
-        if item is None:
-            continue
-        at_hour = next((point["sender_unfinished_groups"] for point in item["backlog_samples"]
-                        if math.isclose(point["time_s"], item["capture_end_s"], abs_tol=1e-9)), None)
-        at_cutoff = item["backlog_samples"][-1]["sender_unfinished_groups"]
-        lines.append(f"| {LABELS.get(a, a)} | {k} | {number(item['signing_service_ms_mean'], 3)} | "
-                     f"{number(None if item['batch_formation_wait_ms_p95'] is None else item['batch_formation_wait_ms_p95'] / 1000)} | "
-                     f"{number(None if item['signing_queue_ms_p95'] is None else item['signing_queue_ms_p95'] / 1000)} | "
-                     f"{number(at_hour, 0)} | {number(at_cutoff, 0)} | {item['unsigned_tail_messages']:,} |")
-    lines += ["", "These composite embedded reference timings do not establish performance on a particular aircraft. The ground receiver's reference profile is also a constrained embedded processor; its queue is not evidence that a modern ground server would have the same limitation. Service-time source details and implementation-equivalence caveats are recorded in `config/hardware_profiles.json`."]
-    rate_headings = " | ".join(f"{rate:g} frames/s: authenticated (%)" for rate in rates)
-    lines += ["", "### Group size and transmission-rate sensitivity", "",
-              "Collision-free control with one reference-speed verification worker. Increasing the pacing rate changes when fragments are sent, not their signature bytes or the total required work. Higher grouping reduces signing frequency but makes the first messages wait for the group to fill.", "",
-              f"| Algorithm | k | {rate_headings} |", "| --- | ---: | " + " | ".join("---:" for _ in rates) + " |"]
-    for cost in costs:
-        a, k = cost["algorithm"], cost["interval_k"]
-        values = " | ".join(number(authenticated(row(a, k, rate, "independent"))) for rate in rates)
-        lines.append(f"| {LABELS.get(a, a)} | {k} | {values} |")
-    lines += ["", f"### Delay and overlap sensitivity at {reference_rate:g} frames/s", "",
-              "The 10-second column uses source availability as its time origin and the eligible cohort in the deadline table. Median authentication delay below starts at ordinary-message reception and includes only messages that actually authenticate. It must be read alongside coverage; pending messages have no completed delay. Overlap results additionally depend on the supplied timestamp assumption and the destructive-overlap model.", "",
-              "| Algorithm | k | Collision-free within 10 s (%) | Collision-free receipt-to-auth median (s) | Overlap authenticated at cutoff (%) | Overlap ordinary RF failures (%) | Auth-added RF loss (% source) | Auth-added TX delay maximum (ms) |",
-              "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
-    for cost in costs:
-        a, k = cost["algorithm"], cost["interval_k"]
-        free = row(a, k, reference_rate, "independent")
-        collision = row(a, k, reference_rate, "destructive_overlap")
-        delay = None if free is None else free.get("receipt_to_auth_ms_p50")
-        failure = None if collision is None else _percent(collision["ordinary_frames_rf_lost"], collision["ordinary_frames_transmitted"])
-        extra_loss = None if collision is None else 100 * collision["authentication_only_additional_rf_loss_fraction"]
-        added = None if free is None else free.get("authentication_added_ordinary_delay_ms_max")
-        lines.append(f"| {LABELS.get(a, a)} | {k} | {number(within(free, 10))} | "
-                     f"{number(None if delay is None else delay / 1000)} | {number(authenticated(collision), 4)} | "
-                     f"{number(failure)} | {number(extra_loss)} | {number(added, 5)} |")
-    overlap_rows = [r for r in report["rows"] if r["channel_mode"] == "destructive_overlap"]
-    baseline_rates = {_percent(r["source_messages"] - r["baseline_original_received_messages"],
-                               r["source_messages"]) for r in overlap_rows}
-    if len(baseline_rates) == 1:
-        lines += ["", f"Before authentication is added, the same destructive-overlap model classifies {number(next(iter(baseline_rates)))}% of target messages as not received. This is a model outcome applied to recorded frames, not an observed loss rate. The auth-added RF-loss column isolates extra losses against a control with the same ordinary-message transmission times."]
-    lines += ["", "In this prototype, verifying a group requires its complete authentication object and every original message in that group. A missing fragment or original message can therefore prevent authentication of the whole group. There is no retransmission or erasure coding. Very low authentication under destructive overlap describes this transport design under that loss model; it is not a failure of the signature algorithm's mathematical verification."]
-    lines += ["", "The local radio scheduler shares each aircraft's transmitter between first-hour target DF17 messages and authentication fragments. Other recorded frames, including follow-up ordinary traffic and Mode S replies, remain fixed interference rather than being rescheduled through that transmitter. Added transmission delay therefore describes this priority scheduler, not complete transponder arbitration or sensor-to-transmission latency."]
-    lines += ["", f"### Authentication accounting at {reference_rate:g} frames/s", "",
-              "Collision-free reference, in target-message counts. These columns sum to the full source cohort. An ambiguous association means the prototype receiver cannot uniquely match a signature to received message occurrences; it does not mean the signature is cryptographically invalid. Unsigned tails arise because this experiment stops forming groups at the target-hour boundary; a continuing sender could form groups using later messages. Pending work has not completed by the cutoff. Every scenario's detailed reasons are retained in the outcome table.", "",
-              "| Algorithm | k | Authenticated | Unsigned tail | Ambiguous association | Other definitive failure | Pending |",
-              "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
-    for cost in costs:
-        a, k = cost["algorithm"], cost["interval_k"]
-        item = row(a, k, reference_rate, "independent")
-        if item is None:
-            continue
-        counts = item["message_outcomes"]
-        authenticated_count = counts.get("authenticated", 0)
-        tails = counts.get("unsigned_tail", 0)
-        ambiguous = counts.get("ambiguous_message", 0)
-        pending = sum(count for reason, count in counts.items() if reason.startswith("pending"))
-        other = sum(counts.values()) - authenticated_count - tails - ambiguous - pending
-        lines.append(f"| {LABELS.get(a, a)} | {k} | {authenticated_count:,} | {tails:,} | "
-                     f"{ambiguous:,} | {other:,} | {pending:,} |")
-    sensitivity = [s for s in scenarios if s not in core]
-    if sensitivity:
-        lines += ["", f"### Receiver-capacity sensitivity at {reference_rate:g} frames/s", "",
-                  "Collision-free authenticated percentage at cutoff. Sender timings, radio rate, grouping and signature bytes are held fixed. Four workers change verification parallelism only. The 1 ms service time is an assumption, not a measured receiver specification.", "",
-                  "| Algorithm | k | One reference worker (%) | Four reference workers (%) | One assumed 1 ms worker (%) |",
-                  "| --- | ---: | ---: | ---: | ---: |"]
-        four = [s for s in sensitivity if s["parameters"].get("receiver_workers") == 4]
-        fast = [s for s in sensitivity if s.get("receiver_profile") == "assumed_receiver_1ms"]
-        for cost in costs:
-            a, k = cost["algorithm"], cost["interval_k"]
-            values = [row(a, k, reference_rate, "independent"),
-                      row(a, k, reference_rate, "independent", four),
-                      row(a, k, reference_rate, "independent", fast)]
-            lines.append(f"| {LABELS.get(a, a)} | {k} | " + " | ".join(number(authenticated(r)) for r in values) + " |")
-    omitted_slh = [r for r in signature_airtime_bounds(report) if r["basis"].startswith("analytical_only")]
-    if omitted_slh:
-        lines += ["", "### SLH-DSA: analytical size bound only", "",
-                  "No full SLH signing or replay was performed. Its fixed 7,856-byte signature needs at least 1,123 frames if every one of the seven payload bytes carries signature data. [FIPS 205, Table 2](https://nvlpubs.nist.gov/nistpubs/fips/nist.fips.205.pdf) specifies the signature size. This calculation excludes ordinary traffic, association metadata, fragment headers, retransmissions and computing time.", "",
-                  "| k | Complete groups | Required signature-only frames | Required airtime (s) | Fraction of target-window airtime (%) | Fraction including follow-up (%) |",
-                  "| ---: | ---: | ---: | ---: | ---: | ---: |"]
-        for bound in omitted_slh:
-            lines.append(f"| {bound['interval_k']} | {bound['groups']:,} | {bound['signature_only_frames']:,} | "
-                         f"{number(bound['required_airtime_s'])} | {number(bound['target_window_airtime_pct'])} | "
-                         f"{number(bound['target_plus_followup_airtime_pct'])} |")
-        lines += ["", "A value above 100% means those signatures alone cannot all fit without overlapping in one fully shared channel during that interval. This is a necessary-capacity bound for that architecture, not a simulated SLH loss rate or a universal statement about other group sizes, channels or receiver architectures."]
-    return lines + ["", "These are conditional outcomes for one recorded window and the declared profiles. They do not establish general day/night effects, avionics certification, or real-world loss probabilities. Published timing means are not worst-case execution times. Actual host runtime measures the cost of conducting this experiment, not onboard latency.", ""]
+    return {"figures_dir": str(directory / "figures"), "figure_manifest": str(path)}
 
 
 def signature_airtime_bounds(report):
@@ -477,7 +402,7 @@ def signature_airtime_bounds(report):
 
 
 def generate_report(results_dir: Path, label: str, *, validate_only=False):
-    """Write six figure families, all-case tables and a factual Markdown gallery."""
+    """Write PDF figures, all-case CSV tables and their integrity manifest."""
     directory = Path(results_dir)
     report = load_report(directory / "03_replay")
     traffic = _traffic(directory / "01_prepared/traffic.json")
@@ -494,15 +419,14 @@ def generate_report(results_dir: Path, label: str, *, validate_only=False):
         return _manifest(directory, sources, label, [], True)
     figures = directory / "figures"
     figures.mkdir(parents=True, exist_ok=True)
-    paths, gallery = [], []
+    paths = []
     cases = [(a, k) for a in report["parameters"]["algorithms"] for k in report["parameters"]["intervals"]]
     case_labels = [f"{LABELS.get(a, a)} / k={k}" for a, k in cases]
-    indexed = {(row["algorithm"], row["interval_k"], row["scenario"]): row for row in metrics}
+    indexed = {(row["algorithm"], row["interval_k"], row["scenario"], row["seed"]): row for row in metrics}
     def value(key):
-        return lambda row: indexed[row["algorithm"], row["interval_k"], row["scenario"]][key]
+        return lambda row: indexed[row["algorithm"], row["interval_k"], row["scenario"], row["seed"]][key]
     with _plotting() as plt:
         paths += _draw_traffic(plt, traffic, figures, label)
-        gallery.append(("01_traffic_by_df", "Recorded traffic by DF", "Every retained DF contributes to channel traffic. The dashed line separates target selection from follow-up."))
 
         costs = []
         for algorithm, k in cases:
@@ -522,7 +446,6 @@ def generate_report(results_dir: Path, label: str, *, validate_only=False):
             _heatmap(plt, axis, [[r[key]] for r in costs], case_labels, ["All formed groups"], caption)
         paths += _save(plt, fig, figures, "02_signature_cost", f"{label}: actual signature and fragmentation cost",
                        "Real cached signature lengths. Fragment counts include association information and fragment headers. Required fragments cover every formed group, including work unfinished at the cutoff. Incomplete final groups are unsigned.")
-        gallery.append(("02_signature_cost", "Signature transmission cost", "These sizes describe the actual signed workloads; the same signatures are reused across replay scenarios."))
 
         bound_algorithms = list(dict.fromkeys(r["algorithm"] for r in lower_bounds))
         bound_cases = report["parameters"]["intervals"]
@@ -543,8 +466,6 @@ def generate_report(results_dir: Path, label: str, *, validate_only=False):
         axis.legend(fontsize=8)
         paths += _save(plt, fig, figures, "02_signature_airtime_lower_bound", f"{label}: optimistic signature-only demand",
                        "Assumes all seven payload bytes carry signature data, without association or fragment headers. Active algorithms use actual signature lengths. Hatched SLH bars use its fixed 7,856-byte size only; no SLH signing or replay is claimed. These are required-airtime bounds, not measured occupancy or loss probabilities.")
-        gallery.append(("02_signature_airtime_lower_bound", "Optimistic signature-only airtime bound",
-                        "This deliberately optimistic packing excludes ordinary traffic and all protocol overhead. SLH-DSA, when omitted from replay, is shown only as an analytical size calculation. Its 7,856-byte size is specified in [FIPS 205, Table 2](https://nvlpubs.nist.gov/nistpubs/fips/nist.fips.205.pdf)."))
 
         paths += _case_figure(plt, report, figures, "03_channel_load", "channel demand for every case", [
             ("Baseline offered airtime (%)", value("baseline_offered_airtime_pct"), None),
@@ -552,106 +473,138 @@ def generate_report(results_dir: Path, label: str, *, validate_only=False):
             ("Total augmented offered airtime (%)", value("augmented_offered_airtime_pct"), None),
             ("Required authentication airtime / window (%)", value("required_authentication_airtime_pct"), None)],
             "First three panels count frames starting in the target interval. Required demand includes all formed groups even if not transmitted. Offered airtime sums frame durations; overlaps can make it exceed 100%, and it is not physical RF occupancy. Follow-up traffic is tabulated separately.", label)
-        gallery.append(("03_channel_load", "Channel load and unmet demand", "All algorithms, group sizes, pacing rates and channel models are shown. Low transmitted load can result from a signer that cannot keep up."))
 
         paths += _case_figure(plt, report, figures, "04_ordinary_delivery", "ordinary-message reception failures and transmission delay", [
             ("Baseline non-reception (% source)", value("baseline_nonreception_pct_source"), 100),
             ("Augmented RF failure (% transmitted)", value("augmented_rf_failure_pct_transmitted"), 100),
             ("Added RF loss from auth (% source)", value("authentication_added_rf_loss_pct_source"), 100),
             ("Auth-added transmission delay maximum (ms)", value("authentication_added_ordinary_delay_ms_max"), None)],
-            "These are modeled failures, not measured operational failure probabilities. Destructive-overlap scenarios lose overlapping frames; collision-free scenarios do not. Added RF loss uses a timing-matched control. RF-failure percentages divide by transmitted ordinary frames; other percentages divide by all targets. Unsent and in-flight messages remain unresolved. Added delay compares the same messages with a FIFO ordinary-only radio; total transmission delay is retained in the table.", label)
-        gallery.append(("04_ordinary_delivery", "Ordinary-message delivery", "The model estimates the percentage of transmission failures under its overlap assumptions. It does not establish a real-world receiver failure rate."))
+            "Observed-capture starts from the successfully recorded baseline and adds only losses involving authentication frames under seeded random priorities. Added loss uses the same shifted ordinary schedule without authentication as its control. RF-failure percentages divide by transmitted ordinary frames; added loss divides by all targets. Unsent/in-flight messages remain separate. Added TX delay compares the same messages with a FIFO ordinary-only radio. These are assumed capture outcomes, not measured failure probabilities.", label)
 
         scenarios = report["parameters"]["scenarios"]
         thresholds = sorted({r["deadline_s"] for r in coverage})
-        covered = {(r["algorithm"], r["interval_k"], r["scenario"], r["anchor"], r["deadline_s"]): r["authenticated_pct_eligible"] for r in coverage}
+        covered = {}
+        for point in coverage:
+            key = point["algorithm"], point["interval_k"], point["scenario"], point["anchor"], point["deadline_s"]
+            covered.setdefault(key, []).append(point["authenticated_pct_eligible"])
+        covered = {key: seed_statistics(values) for key, values in covered.items()}
         for anchor in ("source", "receipt"):
             columns = min(3, len(scenarios))
             rows = math.ceil(len(scenarios) / columns)
             fig, axes = plt.subplots(rows, columns, figsize=(7 * columns, max(6, len(cases) * .38 + 3) * rows), squeeze=False)
             for axis, scenario in zip(axes.flat, scenarios):
-                values = [[covered[a, k, scenario["name"], anchor, t] for t in thresholds] for a, k in cases]
-                _heatmap(plt, axis, values, case_labels, [f"{t:g}s" for t in thresholds], _scenario_label(scenario), 100)
+                stats = [[covered[a, k, scenario["name"], anchor, t] for t in thresholds] for a, k in cases]
+                values = [[point["mean"] for point in points] for points in stats]
+                annotations = [[_format_stats(point, compact=True) for point in points] for points in stats]
+                _heatmap(plt, axis, values, case_labels, [f"{t:g}s" for t in thresholds], _scenario_label(scenario), 100,
+                         annotations=annotations)
             for axis in list(axes.flat)[len(scenarios):]:
                 axis.set_visible(False)
             stem = "05_authentication_deadlines" + ("_from_reception" if anchor == "receipt" else "")
             paths += _save(plt, fig, figures, stem, f"{label}: authenticated within each deadline from {anchor} (%)",
-                           "Percent of the eligible population authenticated by each deadline. Source anchor includes received and lost targets; receipt anchor includes received targets only. Each deadline excludes messages lacking its full observation time. Exact eligible/excluded counts are in authentication_deadlines.csv. A dash means zero eligible messages. These are threshold measurements, not an interpolated delay distribution.")
-            gallery.append((stem, f"Authentication deadlines from {anchor}", "Use the denominator table when comparing thresholds; incomplete observation can change the eligible cohort."))
+                           "Mean percentage [observed seed minimum, maximum]; exactly zero-width ranges are omitted. Ranges are not confidence intervals. Source anchor includes received and lost targets; receipt anchor includes received targets only. Each seed/deadline excludes messages without its full follow-up. Exact per-seed numerators and denominators remain in authentication_deadlines.csv. Missing values remain undefined, not zero. These are discrete deadline measurements.")
 
         backlog_table = []
+        interval_backlog = all("backlog_interval_summaries" in row for row in report["rows"])
+        if any("backlog_interval_summaries" in row for row in report["rows"]) and not interval_backlog:
+            raise ValueError("Cannot mix interval-based and legacy snapshot backlog data.")
         for row in report["rows"]:
-            samples = row["backlog_samples"]
+            samples = row["backlog_interval_summaries" if interval_backlog else "backlog_samples"]
             if not samples:
-                raise ValueError("Missing saved backlog samples.")
+                raise ValueError("Missing saved backlog summaries.")
+            previous_end = row["capture_start_s"]
             for sample in samples:
-                for key in BACKLOG:
-                    _number(sample[key], key)
-                backlog_table.append({"algorithm": row["algorithm"], "interval_k": row["interval_k"], "scenario": row["scenario"], **sample})
-        paths += _case_figure(plt, report, figures, "06_backlog", "unfinished work at the observation cutoff", [
-            (caption, lambda row, key=key: row["backlog_samples"][-1][key], None) for key, caption in BACKLOG.items()],
-            "Unfinished counts include queued and in-service groups, not only waiting queues. Cutoff is the end of the target interval plus follow-up. Detailed sampled timelines appear below; straight segments connect saved samples and do not establish continuous queue evolution.", label)
-        gallery.append(("06_backlog", "Unfinished work", "Signing, transmission and verification are separate resources. Counts include work currently in service."))
+                if interval_backlog:
+                    start, end = sample["start_s"], sample["end_s"]
+                    if not math.isclose(start, previous_end, abs_tol=1e-8) or end <= start:
+                        raise ValueError("Backlog intervals must be consecutive and positive.")
+                    previous_end = end
+                    for stage in BACKLOG:
+                        mean = _number(sample[stage + "_mean"], stage + "_mean")
+                        maximum = _number(sample[stage + "_max"], stage + "_max")
+                        if mean > maximum and not math.isclose(mean, maximum, rel_tol=1e-10, abs_tol=1e-8):
+                            raise ValueError("Mean unfinished work cannot exceed its interval maximum.")
+                    for stage in ("signing", "transmission", "verification"):
+                        count = _number(sample[stage + "_completed_groups"], "completed groups")
+                        if type(count) is not int:
+                            raise ValueError("Completion counts must be integers.")
+                else:
+                    for stage in BACKLOG:
+                        _number(sample[stage], stage)
+                backlog_table.append({"algorithm": row["algorithm"], "interval_k": row["interval_k"],
+                                      "scenario": row["scenario"], "seed": row["seed"], **sample})
+            if interval_backlog and not math.isclose(previous_end, row["observation_horizon_s"], abs_tol=1e-8):
+                raise ValueError("Backlog intervals must cover the full observation horizon.")
+        groups = grouped_rows(report)
+        # The user-requested timeline replaces the redundant cutoff overview.
+        # Legacy snapshots are dots only, never interpolated into a time series.
         for scenario_index, scenario in enumerate(scenarios, 1):
             algorithms = report["parameters"]["algorithms"]
             fig, axes = plt.subplots(len(algorithms), len(BACKLOG), figsize=(15, max(5, len(algorithms) * 2.8)), squeeze=False)
             for ai, algorithm in enumerate(algorithms):
-                for axis, (key, caption) in zip(axes[ai], BACKLOG.items()):
-                    for k in report["parameters"]["intervals"]:
-                        row = next(r for r in report["rows"] if (r["algorithm"], r["interval_k"], r["scenario"]) == (algorithm, k, scenario["name"]))
-                        samples = row["backlog_samples"]
-                        axis.plot([(s["time_s"] - row["capture_start_s"]) / 60 for s in samples], [s[key] for s in samples], marker=".", label=f"k={k}")
-                        axis.axvline((row["capture_end_s"] - row["capture_start_s"]) / 60, color="gray", linestyle=":", linewidth=.7)
+                for axis, (stage, caption) in zip(axes[ai], BACKLOG.items()):
+                    for ki, k in enumerate(report["parameters"]["intervals"]):
+                        members = groups[algorithm, k, scenario["name"]]
+                        color = plt.get_cmap("tab10")(ki % 10)
+                        source_start = members[0]["capture_start_s"]
+                        if interval_backlog:
+                            bins = [row["backlog_interval_summaries"] for row in members]
+                            boundaries = [(point["start_s"], point["end_s"]) for point in bins[0]]
+                            if any([(point["start_s"], point["end_s"]) for point in points] != boundaries for points in bins):
+                                raise ValueError("Replicate backlog bins must have matching boundaries.")
+                            means = [seed_statistics(points[index][stage + "_mean"] for points in bins)
+                                     for index in range(len(boundaries))]
+                            maxima = [max(points[index][stage + "_max"] for points in bins)
+                                      for index in range(len(boundaries))]
+                            x = [(left - source_start) / 60 for left, _ in boundaries] + [(boundaries[-1][1] - source_start) / 60]
+                            extend = lambda values: [*values, values[-1]]
+                            axis.step(x, extend([point["mean"] for point in means]), where="post", color=color, label=f"k={k}")
+                            axis.step(x, extend(maxima), where="post", color=color, linestyle=":", linewidth=.7, alpha=.6)
+                            if len(members) > 1:
+                                axis.fill_between(x, extend([point["min"] for point in means]),
+                                                  extend([point["max"] for point in means]), step="post", color=color, alpha=.15)
+                        else:
+                            times = [point["time_s"] for point in members[0]["backlog_samples"]]
+                            means = [seed_statistics(row["backlog_samples"][index][stage] for row in members)["mean"]
+                                     for index in range(len(times))]
+                            axis.scatter([(time - source_start) / 60 for time in times], means, s=10, color=color, label=f"k={k}")
+                        axis.axvline((members[0]["capture_end_s"] - source_start) / 60, color="gray", linestyle="--", linewidth=.6)
                     axis.set_title(f"{LABELS.get(algorithm, algorithm)}: {caption}", fontsize=9)
                     axis.set_xlabel("Minutes since target start")
                     axis.set_ylabel("Unfinished groups")
                     axis.grid(alpha=.2)
                     axis.legend(fontsize=7)
             stem = f"06_backlog_timeline_{scenario_index:02d}"
-            paths += _save(plt, fig, figures, stem, f"{label}: backlog — {_scenario_label(scenario).replace(chr(10), ', ')}",
-                           "Markers are saved samples; lines only guide the eye. The dotted line ends the target interval. Pending work includes groups in service. Different y-axis scales preserve visibility of each processing stage.")
-            gallery.append((stem, f"Backlog timeline: {scenario['name']}", "All group sizes are shown separately for each algorithm."))
+            note = ("Solid steps: mean across seeds of exact time-weighted unfinished work within each saved interval. Shading: observed seed range, not a confidence interval. Dotted steps: largest event-derived interval maximum across seeds. These interval summaries include every modeled admission/completion and include queued plus in-service work; they are not instantaneous queue samples. Dashed vertical line ends target selection."
+                    if interval_backlog else "Legacy instantaneous snapshots are displayed as unconnected points. They do not establish queue behavior between observations; no interpolation is used.")
+            paths += _save(plt, fig, figures, stem, f"{label}: unfinished work — {_scenario_label(scenario).replace(chr(10), ', ')}", note)
 
+    outcome_reasons = {}
+    for row in report["rows"]:
+        key = row["algorithm"], row["interval_k"], row["scenario"]
+        outcome_reasons.setdefault(key, set()).update(row["message_outcomes"])
     outcomes = [{"algorithm": row["algorithm"], "interval_k": row["interval_k"],
-                 "scenario": row["scenario"], "outcome": outcome, "messages": count,
+                 "scenario": row["scenario"], "seed": row["seed"], "outcome": outcome,
+                 "messages": row["message_outcomes"].get(outcome, 0),
                  "source_messages": row["source_messages"],
-                 "pct_source": _percent(count, row["source_messages"])}
-                for row in report["rows"] for outcome, count in sorted(row["message_outcomes"].items())]
-    for name, table in (("case_metrics.csv", metrics), ("signature_cost.csv", costs), ("signature_airtime_lower_bounds.csv", lower_bounds), ("authentication_deadlines.csv", coverage), ("authentication_outcomes.csv", outcomes), ("backlog_samples.csv", backlog_table)):
+                 "pct_source": _percent(row["message_outcomes"].get(outcome, 0), row["source_messages"])}
+                for row in report["rows"]
+                for outcome in sorted(outcome_reasons[row["algorithm"], row["interval_k"], row["scenario"]])]
+    common = ("algorithm", "interval_k", "scenario")
+    backlog_name = "backlog_intervals" if interval_backlog else "backlog_samples"
+    backlog_keys = (*common, "start_s", "end_s") if interval_backlog else (*common, "time_s")
+    tables = [("case_metrics.csv", metrics), ("case_summary.csv", aggregate_rows(metrics, common)),
+              ("signature_cost.csv", costs), ("signature_airtime_lower_bounds.csv", lower_bounds),
+              ("authentication_deadlines.csv", coverage),
+              ("authentication_deadline_summary.csv", aggregate_rows(coverage, (*common, "anchor", "deadline_s"))),
+              ("authentication_outcomes.csv", outcomes),
+              ("authentication_outcome_summary.csv", aggregate_rows(outcomes, (*common, "outcome"))),
+              (backlog_name + ".csv", backlog_table),
+              (backlog_name + "_summary.csv", aggregate_rows(backlog_table, backlog_keys))]
+    for name, table in tables:
         path = figures / name
         _write_csv(path, table)
         paths.append(path)
-    total_frames = sum(r["messages"] for r in traffic["totals_by_df"].values())
-    first = report["rows"][0]
-    lines = [f"# {label} experiment report", "", "This report is generated from the recorded traffic and integrity-checked replay outputs. It contains measured/model outputs, not an automatic aircraft-feasibility verdict.", "",
-             f"- Recorded frames across all DFs: **{total_frames:,}**.", f"- Target messages: **{first['source_messages']:,}**.",
-             f"- Replay cases: **{len(report['rows'])}**, with every configured algorithm, grouping size and scenario retained.",
-             f"- Recording coverage: **{traffic['coverage_duration_s']:g} seconds**; target-selection interval: **{traffic['target_duration_s']:g} seconds**.",
-             f"- Authentication follow-up: **{first['followup_s']:g} seconds**; cutoff: **{first['trace_duration_s'] + first['followup_s']:g} seconds** after target start. The additional **{max(0, traffic['coverage_duration_s'] - first['trace_duration_s'] - first['followup_s']):.2f} seconds** of recording padding do not extend the replay.", "",
-             "Ordinary messages are sent independently of signing and can be read before authentication completes. A fixed follow-up censors unfinished authentication; unsigned tails and pending work remain in the case table. Embedded timing inputs model processing, rather than measuring the host machine's offline runtime.", "",
-             "The destructive-overlap model assumes overlapping frames are lost. Collision-free scenarios provide a reference. Neither model establishes an empirical operational failure probability; receiver power capture, geography and reception diversity are not modeled. The input recording omits transmissions its receiver did not observe.", "",
-             "## Tables", "", "- [All cases, load, delivery and message accounting](figures/case_metrics.csv)", "- [Signature and fragmentation cost](figures/signature_cost.csv)",
-             "- [Signature-only airtime bounds; SLH analytical only](figures/signature_airtime_lower_bounds.csv)",
-             "- [Authentication outcome counts and reasons](figures/authentication_outcomes.csv)",
-             "- [Authentication deadline numerators and denominators](figures/authentication_deadlines.csv)", "- [Sampled unfinished work](figures/backlog_samples.csv)",
-             "- [Complete replay output](03_replay/replay_summary.json)", "- [Artifact hashes](figures/figure_manifest.json)", ""]
-    if conditional:
-        notice = ["**Interpretation: conditional simulation using the supplied application timestamps.** "
-                  "The original radio timeline is not validated. Collision percentages are sensitivity "
-                  "outputs under this assumed timing and overlap model, not measured operational loss rates. "
-                  "The recording contains exported decoded Mode S frames, not all physical 1090 MHz traffic.", ""]
-        notice += [f"- {reason}" for reason in analysis.get("recording_limitations", [])]
-        if "SLH-DSA-SHA2-128s" not in report["parameters"]["algorithms"]:
-            notice += ["", "SLH-DSA is omitted from replay; its optional size-only bound is explicitly analytical."]
-        notice += ["", "Daytime/nighttime comparisons require both recordings.", ""]
-        lines[2:2] = notice
-    lines += _findings(report, costs)
-    lines += ["## Figures", ""]
-    for stem, title, note in gallery:
-        lines += [f"### {title}", "", note, "", f"![{title}](figures/{stem}.png)", "", f"[PDF](figures/{stem}.pdf) · [SVG](figures/{stem}.svg)", ""]
-    report_path = directory / "report.md"
-    report_path.write_text("\n".join(lines), encoding="utf-8")
-    paths.append(report_path)
     return _manifest(directory, sources, label, paths, False)
 
 
@@ -671,32 +624,45 @@ def compare_windows(daytime_dir: Path, nighttime_dir: Path, output_dir: Path, *,
     sources = {name: _source_files(d, report) for name, d, report in zip(("daytime", "nighttime"), directories, reports)}
     if validate_only:
         return _manifest(directory, sources, "Daytime/nighttime comparison", [], True)
-    indexed = [{(r["algorithm"], r["interval_k"], r["scenario"]): case_metrics(r) for r in report["rows"]} for report in reports]
-    keys = ("authenticated_pct_source", "augmented_rf_failure_pct_transmitted", "actual_added_airtime_pct", "ordinary_transmission_delay_ms_p95")
-    titles = ("Authenticated at cutoff (percentage points)", "RF failure (percentage points)", "Added airtime (percentage points)", "Ordinary delay p95 (ms)")
-    rows = []
+    indexed = [{(row["algorithm"], row["interval_k"], row["scenario"], row["seed"]): case_metrics(row)
+                for row in report["rows"]} for report in reports]
+    if set(indexed[0]) != set(indexed[1]):
+        raise ValueError("Daytime/nighttime comparison requires identical declared case seeds.")
+    keys = ("authenticated_pct_source", "authentication_added_rf_loss_pct_source", "actual_added_airtime_pct",
+            "authentication_added_ordinary_delay_ms_p95")
+    titles = ("Authenticated at cutoff (% of targets; pp)", "Auth-added ordinary loss (% of targets; pp)",
+              "Added offered airtime (percentage points)", "Auth-added delay: mean seed p95 (ms)")
+    raw_rows = []
     for case in indexed[0]:
-        row = {"algorithm": case[0], "interval_k": case[1], "scenario": case[2]}
+        row = {"algorithm": case[0], "interval_k": case[1], "scenario": case[2], "seed": case[3]}
         for metric in keys:
             day, night = indexed[0][case][metric], indexed[1][case][metric]
             row["daytime_" + metric], row["nighttime_" + metric] = day, night
             row["difference_" + metric] = None if day is None or night is None else night - day
-        rows.append(row)
+        raw_rows.append(row)
+    rows = aggregate_rows(raw_rows, ("algorithm", "interval_k", "scenario"))
     figures = directory / "figures"
     figures.mkdir(parents=True, exist_ok=True)
     with _plotting() as plt:
-        fig, axes = plt.subplots(1, len(keys), figsize=(25, max(6, len(reports[0]["parameters"]["algorithms"]) * len(reports[0]["parameters"]["intervals"]) * .39 + 3)), squeeze=False)
-        deltas = {(r["algorithm"], r["interval_k"], r["scenario"]): r for r in rows}
-        names = {s["name"]: _scenario_label(s) for s in reports[0]["parameters"]["scenarios"]}
+        params = reports[0]["parameters"]
+        fig, axes = plt.subplots(1, len(keys), figsize=(25, max(6, len(params["algorithms"]) * len(params["intervals"]) * .48 + 3)), squeeze=False)
+        deltas = {(row["algorithm"], row["interval_k"], row["scenario"]): row for row in rows}
+        names = {scenario["name"]: _scenario_label(scenario) for scenario in params["scenarios"]}
+        cases = [(algorithm, k) for algorithm in params["algorithms"] for k in params["intervals"]]
+        scenarios = [scenario["name"] for scenario in params["scenarios"]]
         for axis, key, title in zip(axes.flat, keys, titles):
-            cases, scenarios, values = metric_matrix(reports[0], lambda r: deltas[r["algorithm"], r["interval_k"], r["scenario"]]["difference_" + key])
-            _heatmap(plt, axis, values, [f"{LABELS.get(a, a)} / k={k}" for a, k in cases], [names[s] for s in scenarios], title, signed=True)
+            def stats(case):
+                item = deltas[case]
+                return {"seed_count": item["seed_count"], **{statistic: item["difference_" + key + "_" + statistic]
+                    for statistic in ("mean", "min", "max", "defined_seed_count")}}
+            values = [[stats((a, k, scenario))["mean"] for scenario in scenarios] for a, k in cases]
+            annotations = [[_format_stats(stats((a, k, scenario)), compact=True) for scenario in scenarios] for a, k in cases]
+            _heatmap(plt, axis, values, [f"{LABELS.get(a, a)} / k={k}" for a, k in cases],
+                     [names[scenario] for scenario in scenarios], title, signed=True, annotations=annotations)
         paths = _save(plt, fig, figures, "07_window_comparison", "Matched window comparison: nighttime minus daytime",
-                      "Differences describe these two recordings. They do not establish a causal daytime/nighttime effect or uncertainty across days. Positive values mean a larger nighttime value, not uniformly better performance. All configurations and hardware/source inputs must match.")
-    table = figures / "window_comparison.csv"
-    _write_csv(table, rows)
-    paths.append(table)
-    report_path = directory / "report.md"
-    report_path.write_text("# Daytime/nighttime comparison\n\nIdentical configurations are matched by algorithm, group size and scenario. Differences are **nighttime minus daytime**. Read absolute values in the table before interpreting differences.\n\n![Matched window comparison](figures/07_window_comparison.png)\n\n[PDF](figures/07_window_comparison.pdf) · [SVG](figures/07_window_comparison.svg) · [All matched values and differences](figures/window_comparison.csv)\n\nThese two observations do not establish a causal day/night effect or uncertainty across days. Scientific conclusions remain pending review alongside the traffic, coverage and backlog figures for each window.\n", encoding="utf-8")
-    paths.append(report_path)
+                      "Mean difference [observed seed minimum, maximum]; exactly zero-width ranges are omitted. Ranges are not confidence intervals. Authentication and added ordinary-loss percentages divide by all target messages. Added loss is measured against the timing-matched no-authentication control. Each difference matches seed labels across different recordings. Positive means larger nighttime values, not uniformly better performance. These windows do not establish a causal day/night effect or variation across days. Counts are not summed across repetitions.")
+    for filename, values in (("window_comparison.csv", rows), ("window_comparison_by_seed.csv", raw_rows)):
+        table = figures / filename
+        _write_csv(table, values)
+        paths.append(table)
     return _manifest(directory, sources, "Daytime/nighttime comparison", paths, False)

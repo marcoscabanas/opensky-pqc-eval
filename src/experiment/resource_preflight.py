@@ -16,7 +16,8 @@ from pathlib import Path
 import time
 
 from .hardware_profiles import timing_samples_ms
-from .model_support import FRAME_S, validate_scenario
+from .model_support import FRAME_S
+from .replay_artifacts import validate_replay_scenario
 from .replay_transport import OBJECT_FIXED_BYTES, TAG_BYTES, fragment_count
 
 
@@ -196,7 +197,7 @@ def build_resource_preflight(trace, algorithm_configs, profiles, scenarios, inte
         parameters = dict(scenario["parameters"])
         if parameters.pop("replay_model", None) != "signed_detached":
             raise ValueError("Resource preflight supports only signed_detached scenarios.")
-        p = validate_scenario(parameters)
+        p = validate_replay_scenario(parameters)
         if p["max_batch_wait_s"] is not None or any(p[key] is not None for key in
                 ("sender_queue_limit", "transmission_queue_limit", "receiver_queue_limit")):
             raise ValueError("Resource preflight requires exact-count grouping and unbounded queues.")

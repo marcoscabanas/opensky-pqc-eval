@@ -1,8 +1,9 @@
 import json
+import copy
 from pathlib import Path
 import tempfile
 import unittest
-from src.experiment.result_validation import load_report, metric_matrix
+from src.experiment.result_validation import load_report, metric_matrix, metric_statistics, seed_statistics
 from src.experiment.replay_artifacts import _digest, _publish
 
 
@@ -67,3 +68,59 @@ class SignedPlotValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "conserve"):
             load_report(self.root)
 
+    def test_multiple_seeds_report_mean_and_range_without_overwriting(self):
+        self.report["parameters"]["seeds"] = [1, 2, 3, 4, 5]
+        first = self.report["rows"][0]
+        self.report["rows"] = [{**first, "seed": seed, "additional_offered_airtime_load": seed}
+                               for seed in self.report["parameters"]["seeds"]]
+        self.report["input_fingerprint"] = _digest({key: self.report[key]
+            for key in ("schema_version", "mode", "provenance", "parameters")})
+        self.publish()
+        report = load_report(self.root)
+        metric = lambda row: row["additional_offered_airtime_load"]
+        self.assertEqual(metric_matrix(report, metric)[2], [[3]])
+        self.assertEqual(metric_statistics(report, metric)["ECDSA-P256", 1, "example"],
+                         {"seed_count": 5, "defined_seed_count": 5, "mean": 3, "min": 1, "max": 5})
+
+    def test_scenario_seed_overrides_keep_control_single_and_capture_repeated(self):
+        params = self.report["parameters"]
+        params["seeds"] = [1, 2, 3, 4, 5]
+        params["scenarios"][0]["seeds"] = [1]
+        scenario = copy.deepcopy(params["scenarios"][0])
+        scenario.update(name="repeated")
+        scenario.pop("seeds")
+        params["scenarios"].append(scenario)
+        first = self.report["rows"][0]
+        self.report["rows"] += [{**first, "scenario": "repeated", "seed": seed}
+                                for seed in params["seeds"]]
+        self.report["input_fingerprint"] = _digest({key: self.report[key]
+            for key in ("schema_version", "mode", "provenance", "parameters")})
+        self.publish()
+        stats = metric_statistics(load_report(self.root), lambda row: row["source_messages"])
+        self.assertEqual(stats["ECDSA-P256", 1, "example"]["seed_count"], 1)
+        self.assertEqual(stats["ECDSA-P256", 1, "repeated"]["seed_count"], 5)
+        self.assertEqual(stats["ECDSA-P256", 1, "repeated"]["mean"], 1)
+
+    def test_missing_delay_seeds_remain_missing_and_defined_count_is_explicit(self):
+        self.assertEqual(seed_statistics([None, 10, 30, None, 20]),
+                         {"seed_count": 5, "defined_seed_count": 3, "mean": 20, "min": 10, "max": 30})
+        self.assertEqual(seed_statistics([None] * 5)["mean"], None)
+
+    def test_observed_capture_cannot_claim_predicted_baseline_loss(self):
+        self.report["parameters"]["scenarios"][0]["parameters"]["channel_mode"] = "observed_capture"
+        self.report["rows"][0].update(channel_mode="observed_capture", baseline_original_received_messages=0,
+            timing_matched_original_received_messages=1, ordinary_frames_in_flight_at_horizon=0)
+        self.report["input_fingerprint"] = _digest({key: self.report[key]
+            for key in ("schema_version", "mode", "provenance", "parameters")})
+        self.publish()
+        with self.assertRaisesRegex(ValueError, "preserve observed"):
+            load_report(self.root)
+
+    def test_report_cannot_relabel_a_different_channel_model(self):
+        self.report["parameters"]["scenarios"][0]["parameters"]["channel_mode"] = "observed_capture"
+        self.report["rows"][0]["channel_mode"] = "independent"
+        self.report["input_fingerprint"] = _digest({key: self.report[key]
+            for key in ("schema_version", "mode", "provenance", "parameters")})
+        self.publish()
+        with self.assertRaisesRegex(ValueError, "channel mode differs"):
+            load_report(self.root)

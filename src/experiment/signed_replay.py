@@ -6,10 +6,12 @@ service times. Reception and subsequent cryptographic acceptance are distinct.
 """
 
 from collections import Counter, defaultdict, deque
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 import heapq
 import math
 import random
+from operator import itemgetter
 from pathlib import Path
 import tempfile
 import time
@@ -18,7 +20,9 @@ import numpy as np
 
 from .delayed_metrics import summarize
 from .channel_trace import replay_window, validate_coverage
-from .model_support import validate_scenario, _queue_full
+from .model_support import _queue_full
+from .replay_artifacts import validate_replay_scenario as validate_scenario
+from .backlog_intervals import summarize_work_intervals
 from .hardware_profiles import timing_samples_ms
 from .model_support import FRAME_S, _number, _quantiles, form_groups
 from .replay_transport import (
@@ -90,20 +94,82 @@ _MEMMAP_THRESHOLD = 8_000_000
 
 
 class _ReplayReceiver(ReplayReceiver):
-    """Avoid scanning retained observations when expiry is provably impossible.
+    """Restrict matching to the exact sorted reception-time window.
 
     Reception timestamps are validated as nonnegative. With the study's
     horizon-wide retention, the earliest permissible observation remains at or
     before zero throughout the replay, so filtering cannot remove any item.
-    Short-retention uses still take the general receiver's expiry path.
+    Short-retention uses still take the general receiver's expiry path. The
+    event heap delivers receptions in time order; invalid verification restores
+    reservations and sorts that aircraft's observations. Out-of-order callers
+    explicitly fall back to full-list matching rather than assuming ordering.
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._unsorted_aircraft = set()
 
     def observe_message(self, raw, reception_s):
         tag, reception_us = message_tag(raw), _time_us(reception_s)
+        icao = raw[1:4].hex().upper()
+        observations = self.observations[icao]
+        if observations and reception_us < observations[-1][0]:
+            self._unsorted_aircraft.add(icao)
         if reception_us - self.max_age_us - self.clock_tolerance_us <= 0:
-            self.observations[raw[1:4].hex().upper()].append((reception_us, raw, tag))
+            observations.append((reception_us, raw, tag))
         else:
             super().observe_message(raw, reception_s)
+
+    def _observation_window(self, descriptor, now_s):
+        observations = self.observations.get(descriptor.icao, ())
+        if descriptor.icao in self._unsorted_aircraft:
+            return observations, 0, len(observations)
+        first = descriptor.first_us - self.clock_tolerance_us
+        last = min(descriptor.last_us + self.clock_tolerance_us, _time_us(now_s))
+        return (observations, bisect_left(observations, first, key=itemgetter(0)),
+                bisect_right(observations, last, key=itemgetter(0)))
+
+    def reconstruct(self, descriptor, now_s):
+        observations, first, last = self._observation_window(descriptor, now_s)
+        if not observations or (first == 0 and last == len(observations)):
+            return super().reconstruct(descriptor, now_s)
+        # The general receiver remains the authority for key/session, freshness,
+        # tag collisions, duplicate ambiguity and signing-byte reconstruction.
+        # It is synchronous and read-only, so temporarily narrowing this one
+        # list changes neither retained observations nor receiver decisions.
+        self.observations[descriptor.icao] = observations[first:last]
+        try:
+            return super().reconstruct(descriptor, now_s)
+        finally:
+            self.observations[descriptor.icao] = observations
+
+    def reserve_observations(self, descriptor, now_s):
+        observations, left, right = self._observation_window(descriptor, now_s)
+        first = descriptor.first_us - self.clock_tolerance_us
+        last = min(descriptor.last_us + self.clock_tolerance_us, _time_us(now_s))
+        tags = set(descriptor.message_tags)
+        selected, retained = [], []
+        for item in observations[left:right]:
+            (selected if first <= item[0] <= last and item[2] in tags else retained).append(item)
+        if observations:
+            observations[left:right] = retained
+        return selected
+
+
+def _reserve_observations(receiver, descriptor, now_s):
+    """Reserve matching occurrences, retaining the general receiver fallback."""
+    optimized = getattr(receiver, "reserve_observations", None)
+    if optimized is not None:
+        return optimized(descriptor, now_s)
+    first = descriptor.first_us - receiver.clock_tolerance_us
+    last = min(descriptor.last_us + receiver.clock_tolerance_us, _time_us(now_s))
+    tags = set(descriptor.message_tags)
+    observations = receiver.observations[descriptor.icao]
+    selected, retained = [], []
+    for item in observations:
+        (selected if first <= item[0] <= last and item[2] in tags else retained).append(item)
+    receiver.observations[descriptor.icao] = retained
+    return selected
 
 
 def _radio_run(first, count, step, horizon):
@@ -613,7 +679,10 @@ def _simulate(trace, algorithm, interval, workload, sender_profile, receiver_pro
         "sender_offered_utilization_max_per_aircraft": max(sender_required.values(), default=0) / duration,
         "authentication_radio_offered_utilization_max_per_aircraft": max(radio_required.values(), default=0) / duration,
         "authentication_required_airtime_load_max_per_aircraft": max(radio_airtime_required.values(), default=0) / duration,
-        "backlog_samples": backlog, "channel_summary": channel.get("summary", {}),
+        "backlog_samples": backlog,
+        "backlog_interval_summaries": summarize_work_intervals(groups, start, horizon),
+        "backlog_interval_basis": "Exact time-weighted means, within-bin maxima and completions from every modeled job; 60-second reporting bins are not simulation steps.",
+        "channel_summary": channel.get("summary", {}),
         "processed_events": fixed_events + frame_total + receiver_events,
         "group_work_states_at_horizon": dict(sorted(Counter(group.state for group in groups).items())),
         **_quantiles(batch_waits, "batch_formation_wait_ms"),
@@ -678,6 +747,12 @@ def _simulate(trace, algorithm, interval, workload, sender_profile, receiver_pro
         assumptions[4] = "The baseline uses recorded target times; the augmented run releases targets independently of collection and signing, with radio contention allowed to shift them. A timing-matched control removes authentication frames while retaining the augmented target schedule to isolate their RF effect."
         assumptions[5] = "A fixed capture-plus-follow-up horizon censors unfinished work. Incomplete fixed-count groups cannot authenticate, but their ordinary messages are still transmitted; radio-pending originals remain separate from RF losses."
         assumptions[6] = "Receiver reconstruction uses received raw bytes, signed tags and provisioned keys/session, never sender trace IDs. A shared timing allowance is supplied from an input-only priority-radio upper bound: per aircraft b_i=max(a_i+F,b_(i-1)+F), tolerance=max_i(b_i+F-a_i)+receive jitter+1 microsecond for timestamp rounding. It is fixed across signing/grouping/rate cases for the same trace and jitter, not inferred from actual delays or operational clocks. Retention still spans the horizon; excess matching observations inside the signed first/last window plus this allowance remain ambiguous."
+    if p["channel_mode"] == "observed_capture":
+        assumptions[4] = "Baseline and timing-matched no-authentication control condition on observed frame success. Recorded-to-recorded overlaps are exempt, including locally shifted target starts; only interference involving added authentication can cause modeled RF rejection. This is an observed-success-conditioned sensitivity model, not a reconstruction of complete receiver physics."
+        assumptions[9] = "Overlaps involving authentication compare seeded per-frame random capture priorities. An isolated two-frame overlap recovers exactly one with equal probability. Multi-frame conflicts use consistent priorities; a frame fails if a directly overlapping eligible competitor has higher priority. Priorities are not measured signal strengths; losing frames still interfere and no interference cancellation is modeled."
+        summary["metric_notes"].append(assumptions[4])
+        summary["metric_notes"].append(assumptions[9])
+    assumptions.append("Backlog timeline bins integrate all job intervals and include exact within-bin maxima and completion counts. Legacy six-minute snapshots remain numerical compatibility data and are not used to infer continuous queue behavior.")
     if declared_window:
         cutoff_note = (
             "The declared target window is [start,end), including quiet edges. The fixed observation cutoff is exactly "
@@ -772,16 +847,7 @@ def _receive(records, raw, groups, receiver, received, reception_times,
         group.queued_at = now
         group.signing_input = result.signing_input
         descriptor = group.delivered.descriptor
-        first = descriptor.first_us - receiver.clock_tolerance_us
-        last = min(descriptor.last_us + receiver.clock_tolerance_us, round(now * 1_000_000))
-        tags = set(descriptor.message_tags)
-        observations = receiver.observations[descriptor.icao]
-        chosen = [position for position, (time_us, _, tag) in enumerate(observations)
-                  if first <= time_us <= last and tag in tags]
-        group.reserved_observations = [observations[position] for position in chosen]
-        chosen_set = set(chosen)
-        receiver.observations[descriptor.icao] = [item for position, item in enumerate(observations)
-                                                if position not in chosen_set]
+        group.reserved_observations = _reserve_observations(receiver, descriptor, now)
         group.state = "pending_verification_queue"
         queue.append((index, now))
         peak_queue = max(peak_queue, len(queue))

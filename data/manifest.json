@@ -11,8 +11,8 @@
       "notes": "Prepare counts and cumulative DF plots only. Do not sign or replay as the main experiment while experiment_blockers are present. The original JSONL remains unchanged.",
       "acquisition_command": "uvx --with pyModeS modes live --network airsquitter.lr.tudelft.nl:10004 --dump-to daytime.jsonl",
       "inferred_decoder_version": "pyModeS 3.6.0; inferred from matching cached environments, original command was unpinned",
-      "reported_local_window": "Thursday, October 10th 2026, 09:30–10:40 (user wording)",
-      "timestamp_date_note": "File Unix timestamps indicate Thursday 2026-10-08, 09:30:02.994089–10:40:19.672826 Europe/Amsterdam. The stated October 10 date differs.",
+      "reported_local_window": "Thursday, October 10th 2026, 09:30\u201310:40 (user wording)",
+      "timestamp_date_note": "File Unix timestamps indicate Thursday 2026-10-08, 09:30:02.994089\u201310:40:19.672826 Europe/Amsterdam. The stated October 10 date differs.",
       "input_sha256": "ba98b11206f315faa3b396b18d5d47544daa929e5a13f84864599af0b838037f",
       "input_audit": "results/daytime/input_audit.json",
       "boundary_basis": "For traffic-only preparation, anchor the first hour to the earliest supplied timestamp; use the next representable timestamp after the final observation as the exclusive file bound. These file bounds are not verified receiver start/stop times or proof of RF coverage.",
@@ -24,13 +24,25 @@
       ]
     },
     "nighttime": {
-      "status": "awaiting_dataset",
-      "timestamp_mode": null,
-      "recording_start": null,
-      "recording_end": null,
-      "source": null,
-      "observation_domain": null,
-      "notes": "Complete this entry from acquisition metadata; timestamps must use explicit seconds. Planned recording: 60-minute target window plus 10-minute authentication follow-up."
+      "status": "conditional_recorded_timing",
+      "timestamp_mode": "unix_seconds",
+      "recording_start": 1791493204.91995,
+      "recording_end": 1791497449.6723254,
+      "source": "User-supplied pyModeS network JSONL export from airsquitter.lr.tudelft.nl:10004 over TU Delft VPN",
+      "observation_domain": "Single receiver connected to an ADS-B antenna on the roof of the Faculty of Aerospace Engineering, TU Delft, Delft, Netherlands (user report)",
+      "notes": "Use this unchanged recording for the explicitly conditional recorded-timing experiment. The target is the first 3600 seconds after the earliest recorded timestamp; the next 600 seconds provide authentication follow-up. The remaining approximately 44.752375 seconds are recording padding and do not extend the evaluation cutoff.",
+      "acquisition_command": "uvx --with pyModeS modes live --network airsquitter.lr.tudelft.nl:10004 --dump-to nighttime.jsonl",
+      "decoder_version_note": "User confirmed the same receiver and pyModeS command as daytime. The command is unpinned; no original nighttime software version was independently recorded.",
+      "reported_local_window": "Thursday 2026-10-08 23:00 until Friday 2026-10-09 00:10, Europe/Amsterdam (CEST), confirmed by researcher.",
+      "timestamp_date_note": "File Unix timestamps span 2026-10-08 23:00:04.919950 to 2026-10-09 00:10:49.672325 Europe/Amsterdam. The stated wall-clock window is approximate; file-based bounds are explicit.",
+      "input_sha256": "ca2f2443347eb120f5b11c11f373dca109f8cdc19b43718f8988cea30d34573d",
+      "input_audit": "results/nighttime/input_audit.json",
+      "boundary_basis": "Anchor the conditional target hour to the minimum supplied timestamp. Use the next representable timestamp after the final observation as the exclusive file bound. These application timestamps and file bounds do not establish RF timing accuracy or reception of unseen transmissions.",
+      "timestamp_semantics": "Receiver-counter differences within TCP bursts, re-anchored to host wall clock for every burst; original counters omitted from JSONL.",
+      "experiment_blockers": [
+        "The unpinned pyModeS network export uses burst-relative receiver-counter differences re-anchored to host wall time; original receiver counters are absent. Cross-burst timing remains unvalidated for physical collision inference.",
+        "Only exported decoded Mode S frames are represented. Unreceived or undecoded frames and skipped Mode A/C replies are not reconstructed; this is not complete physical 1090 MHz traffic."
+      ]
     }
   }
 }

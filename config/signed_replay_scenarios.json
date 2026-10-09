@@ -10,13 +10,18 @@
     "The predeclared follow-up is 600 s: an isolated SLH-DSA k=20 group takes approximately 319 s signing plus 269 s to pace 2691 fragments at 10 frames/s. This engineering observation budget is not a deadline and does not guarantee queues will drain.",
     "Incomplete exact-count groups remain unsigned; their ordinary messages are still transmitted. Unsent authentication traffic and unverified work at the cutoff are explicitly pending.",
     "Rates 10, 50, and 100 fragment frames/s per aircraft are declared sensitivity choices, not measured capacity or authorized ADS-B rates.",
-    "One seed value is retained for API compatibility. Zero random erasure, zero jitter, fixed service times, and no synthetic background make each cached-workload replay deterministic; this is not a statistical repetition.",
+    "The same recorded frames and actual cached signatures are reused for all seeds. Capture scenarios use seeds 1\u20135 to repeat the assumed random per-frame capture priorities; deterministic collision-free controls explicitly run only seed 1. Seed variability represents this channel assumption, not different recordings or measured reception uncertainty.",
     "The baseline receiver uses one verification worker. Separate receiver-capacity sensitivity scenarios can set receiver_workers to 2 or 4.",
     "max_events=200000000 is a software execution guard, not an RF capacity or loss threshold. The daytime resource calculation bounds the largest configured case below 157 million events; bounded-memory execution is validated separately. Exceeding the guard aborts rather than truncating a result.",
-    "Two additional collision-free 50-frame/s receiver-capacity sensitivities retain the sender and radio: four reference-speed workers, or one assumed 1 ms worker. They isolate verification capacity; the 1 ms service is not an empirical server benchmark. All 72 main cases remain, plus 24 sensitivity cases, for 96 per window with three algorithms."
+    "Two additional collision-free 50-frame/s receiver-capacity sensitivities retain the sender and radio: four reference-speed workers, or one assumed 1 ms worker. They isolate verification capacity; the 1 ms service is not an empirical server benchmark. Three algorithms and four group sizes yield 180 seeded capture cases plus 60 deterministic controls/sensitivities: 240 cases per window, 480 for both windows.",
+    "The observed_capture model conditions on recorded decoded frames having been received: observed\u2013observed overlaps are not retroactively treated as baseline losses. Only authentication-related overlaps can reject frames. Random priorities represent an assumed capture mechanism without received-power, geometry or receiver calibration; outcomes are conditional sensitivity results, not measured real-world loss probabilities."
   ],
   "seeds": [
-    1
+    1,
+    2,
+    3,
+    4,
+    5
   ],
   "scenarios": [
     {
@@ -52,11 +57,14 @@
         "record_events": false,
         "channel_mode": "independent",
         "background_frames_per_second": 0
-      }
+      },
+      "seeds": [
+        1
+      ]
     },
     {
-      "name": "detached_collision_r10",
-      "description": "Real detached signatures over exact-count groups; ordinary transmission proceeds independently of signing.",
+      "name": "detached_capture_r10",
+      "description": "Conditional observed-traffic capture model: preserve recorded receptions absent authentication; seeded per-frame priorities resolve overlaps involving added authentication frames.",
       "sender_profile": "embedded_reference",
       "receiver_profile": "embedded_reference",
       "parameters": {
@@ -85,7 +93,7 @@
         },
         "max_events": 200000000,
         "record_events": false,
-        "channel_mode": "destructive_overlap",
+        "channel_mode": "observed_capture",
         "background_frames_per_second": 0
       }
     },
@@ -122,11 +130,14 @@
         "record_events": false,
         "channel_mode": "independent",
         "background_frames_per_second": 0
-      }
+      },
+      "seeds": [
+        1
+      ]
     },
     {
-      "name": "detached_collision_r50",
-      "description": "Real detached signatures over exact-count groups; ordinary transmission proceeds independently of signing.",
+      "name": "detached_capture_r50",
+      "description": "Conditional observed-traffic capture model: preserve recorded receptions absent authentication; seeded per-frame priorities resolve overlaps involving added authentication frames.",
       "sender_profile": "embedded_reference",
       "receiver_profile": "embedded_reference",
       "parameters": {
@@ -155,7 +166,7 @@
         },
         "max_events": 200000000,
         "record_events": false,
-        "channel_mode": "destructive_overlap",
+        "channel_mode": "observed_capture",
         "background_frames_per_second": 0
       }
     },
@@ -192,11 +203,14 @@
         "record_events": false,
         "channel_mode": "independent",
         "background_frames_per_second": 0
-      }
+      },
+      "seeds": [
+        1
+      ]
     },
     {
-      "name": "detached_collision_r100",
-      "description": "Real detached signatures over exact-count groups; ordinary transmission proceeds independently of signing.",
+      "name": "detached_capture_r100",
+      "description": "Conditional observed-traffic capture model: preserve recorded receptions absent authentication; seeded per-frame priorities resolve overlaps involving added authentication frames.",
       "sender_profile": "embedded_reference",
       "receiver_profile": "embedded_reference",
       "parameters": {
@@ -225,7 +239,7 @@
         },
         "max_events": 200000000,
         "record_events": false,
-        "channel_mode": "destructive_overlap",
+        "channel_mode": "observed_capture",
         "background_frames_per_second": 0
       }
     },
@@ -262,7 +276,10 @@
         "record_events": false,
         "channel_mode": "independent",
         "background_frames_per_second": 0
-      }
+      },
+      "seeds": [
+        1
+      ]
     },
     {
       "name": "detached_independent_r50_verify1ms",
@@ -297,7 +314,10 @@
         "record_events": false,
         "channel_mode": "independent",
         "background_frames_per_second": 0
-      }
+      },
+      "seeds": [
+        1
+      ]
     }
   ]
 }

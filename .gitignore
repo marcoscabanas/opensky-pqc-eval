@@ -13,18 +13,15 @@ __pycache__/
 *.lock
 *.partial
 
-# Historical data, results, manuscripts, checkpoints and private keys. Local only.
+# Local development artifacts.
 /trash/
 .checkpoints/
 
-# Original recordings and generated results are distributed as research artifacts,
-# not silently committed as large Git files. Metadata and empty destinations stay visible.
-/data/*.jsonl
-/data/*.beast
-/data/*.beast.json
-/results/daytime/*
-!/results/daytime/.gitkeep
-/results/nighttime/*
-!/results/nighttime/.gitkeep
-/results/comparison/*
-!/results/comparison/.gitkeep
+# Recordings and generated artifacts are distributed through Zenodo.
+# Keep the small recording manifest with the software.
+/data/*
+!/data/manifest.json
+/results/
+
+# Personal Zenodo upload staging; never commit the archived datasets.
+/zenodo_upload/

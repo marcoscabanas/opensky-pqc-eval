@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Step 4: validate the replay and generate figures, tables and a report."""
+"""Step 4: validate the replay and generate PDF figures and numerical tables."""
 
 from pathlib import Path
 import sys

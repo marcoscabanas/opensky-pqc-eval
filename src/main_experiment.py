@@ -211,8 +211,7 @@ def prepare_window(config, name, metadata, *, validate_only=False):
 
 
 def _study_cases(config):
-    from src.experiment.replay_artifacts import load_scenarios
-    from src.experiment.model_support import validate_scenario
+    from src.experiment.replay_artifacts import load_scenarios, validate_replay_scenario
     from src.experiment.hardware_profiles import load_profiles, timing_samples_ms
 
     algorithms = list(selected_algorithm_configs(config))
@@ -222,7 +221,7 @@ def _study_cases(config):
         parameters = dict(scenario["parameters"])
         if parameters.pop("replay_model", None) != "signed_detached":
             raise ValueError("The main experiment requires signed_detached scenarios.")
-        parameters = validate_scenario(parameters)
+        parameters = validate_replay_scenario(parameters)
         if parameters["max_batch_wait_s"] is not None:
             raise ValueError("The main experiment uses exact-count grouping with no batch timeout.")
         if parameters["followup_s"] != config["followup_s"]:
@@ -291,7 +290,7 @@ def sign_window(config, name, *, validate_only=False):
     from src.experiment.io_support import load_trace
     from src.experiment.signed_workload import backend_identity, build_or_load_workload
     from src.experiment.channel_trace import load_channel_trace, replay_window as bounds, validate_coverage
-    from src.experiment.model_support import validate_scenario
+    from src.experiment.replay_artifacts import validate_replay_scenario
 
     algorithms, scenarios, prepared, cache, identity = _signing_inputs(config, name)
     configured = _read(config["algorithms_config"])
@@ -306,7 +305,7 @@ def sign_window(config, name, *, validate_only=False):
         for scenario in scenarios:
             parameters = dict(scenario["parameters"])
             parameters.pop("replay_model")
-            parameters = validate_scenario(parameters)
+            parameters = validate_replay_scenario(parameters)
             _, _, horizon = bounds(trace, channel, parameters["followup_s"], parameters["receive_jitter_ms"])
             validate_coverage(channel, horizon)
             if len(trace) + sum(t <= horizon for t in channel["extra_starts"]) > parameters["max_events"]:

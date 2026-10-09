@@ -326,7 +326,9 @@ class MainWorkflowTests(unittest.TestCase):
         self.assertTrue(all(row["authenticated_messages"] == 4 for row in report["rows"]))
         inventory = json.loads((output / "02_signed/signatures_manifest.json").read_text())
         self.assertEqual(set(inventory["workloads"]), {"ECDSA-P256:k=1", "ECDSA-P256:k=2"})
-        self.assertTrue((output / "figures/01_traffic_by_df.png").exists())
+        self.assertTrue((output / "figures/01_traffic_by_df.pdf").exists())
+        self.assertFalse((output / "figures/01_traffic_by_df.png").exists())
+        self.assertFalse((output / "figures/01_traffic_by_df.svg").exists())
         with patch("src.experiment.signed_workload._build", side_effect=AssertionError("must not sign")), \
                 patch("src.experiment.signed_replay.simulate", side_effect=AssertionError("must not replay")):
             workflow.run(self.config, window="daytime", stage="replay", validate_only=True)
