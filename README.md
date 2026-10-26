@@ -1,6 +1,6 @@
-# ADS-B authentication experiment
+# Trace-Driven Evaluation of Post-Quantum Authentication for ADS-B Using OpenSky Network Data
 
-This repository reproduces a trace-driven experiment: prepare recorded Mode S traffic, sign the first hour's ADS-B messages, replay the traffic with fragmented signatures, and measure reception, authentication delay and processing backlog.
+This repository reproduces a trace-driven experiment: prepare recorded Mode S traffic, sign the first hour's ADS-B messages, replay the traffic with fragmented signatures, and measure reception, authentication delay and processing backlog. This repository complements the paper presented at The 14th OpenSky Symposium (29-30 October 2026) in Madrid, Spain.
 
 The completed study contains **480 replay cases**, **24 signed workloads**, and **5,678,094 verified signatures** across daytime and nighttime recordings, using ECDSA P-256, Falcon-512 and ML-DSA-44. The first-hour authentication targets are 752,053 daytime messages and 651,084 nighttime messages. ECDSA is the classical reference. SLH-DSA is implemented and tested, but its full replay matrix was not completed; its assessment is analytical and diagnostic.
 
