@@ -4,7 +4,7 @@ This repository reproduces a trace-driven experiment: prepare recorded Mode S tr
 
 The completed study contains **480 replay cases**, **24 signed workloads**, and **5,678,094 verified signatures** across daytime and nighttime recordings, using ECDSA P-256, Falcon-512 and ML-DSA-44. The first-hour authentication targets are 752,053 daytime messages and 651,084 nighttime messages. ECDSA is the classical reference. SLH-DSA is implemented and tested, but its full replay matrix was not completed; its assessment is analytical and diagnostic.
 
-**Code and data:** software version [`v0.1.0`](https://github.com/marcoscabanas/opensky-pqc-eval/tree/v0.1.0) corresponds to the recordings, signed workloads and reference results uploaded to Zenodo under DOI [10.5281/zenodo.23652076](https://doi.org/10.5281/zenodo.23652076). A code-only clone does not include the experimental data. Follow the tagged-clone instructions below to obtain the software that matches those artifacts.
+**Code and data:** GitHub release [`v1.0.0`](https://github.com/marcoscabanas/opensky-pqc-eval/tree/v1.0.0) corresponds to **Zenodo version v1**, containing the recordings, signed workloads and reference results under DOI [10.5281/zenodo.23652076](https://doi.org/10.5281/zenodo.23652076). A code-only clone does not include the experimental data. Follow the tagged-clone instructions below to obtain the software that matches those artifacts.
 
 ## 1. Choose what to reproduce
 
@@ -17,12 +17,14 @@ The completed study contains **480 replay cases**, **24 signed workloads**, and 
 
 ## 2. Obtain the matching code and data
 
-Use the **[GitHub `v0.1.0` tag](https://github.com/marcoscabanas/opensky-pqc-eval/tree/v0.1.0) and [Zenodo artifact version 10.5281/zenodo.23652076](https://doi.org/10.5281/zenodo.23652076)** together. The default branch may contain later documentation or development changes; the tag preserves the exact software files archived with the experiment. There is no continuous synchronization between the services: the release identifies the software, and `artifact_manifest.json` identifies the corresponding data and reference results. The restoration helper checks every archived code file, including the README, before placing data in the checkout.
+Use the **[GitHub `v1.0.0` tag](https://github.com/marcoscabanas/opensky-pqc-eval/tree/v1.0.0) and [Zenodo artifact version 10.5281/zenodo.23652076](https://doi.org/10.5281/zenodo.23652076)** together. The default branch may contain later documentation or development changes; the tag preserves the exact software files archived with the experiment. There is no continuous synchronization between the services: the release identifies the software, and `artifact_manifest.json` identifies the corresponding data and reference results. The restoration helper checks every archived code file, including the README, before placing data in the checkout.
+
+**Version labels:** the immutable Zenodo files retain the original `v0.1.0` filenames, package version and metadata. Git tags `v1.0.0` and `v0.1.0` point to the same archived commit, `38eb299f7dfaa8ab6070b05ba88e104d8094cf8e`. Both names therefore select identical files; keep the downloaded filenames and metadata unchanged.
 
 Clone the matching version. `--depth 1` avoids downloading historical development data:
 
 ```bash
-git clone --depth 1 --branch v0.1.0 --single-branch https://github.com/marcoscabanas/opensky-pqc-eval.git
+git clone --depth 1 --branch v1.0.0 --single-branch https://github.com/marcoscabanas/opensky-pqc-eval.git
 cd opensky-pqc-eval
 mkdir -p ../zenodo-downloads
 ```
