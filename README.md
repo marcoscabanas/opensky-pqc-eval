@@ -4,7 +4,7 @@ This repository reproduces a trace-driven experiment: prepare recorded Mode S tr
 
 The completed study contains **480 replay cases**, **24 signed workloads**, and **5,678,094 verified signatures** across daytime and nighttime recordings, using ECDSA P-256, Falcon-512 and ML-DSA-44. The first-hour authentication targets are 752,053 daytime messages and 651,084 nighttime messages. ECDSA is the classical reference. SLH-DSA is implemented and tested, but its full replay matrix was not completed; its assessment is analytical and diagnostic.
 
-**Publication layout:** GitHub holds the software; Zenodo holds the recordings, signed workloads and results. **Release `v0.1.0` is being prepared locally; its GitHub tag and matching Zenodo deposit are not yet published. DOI [10.5281/zenodo.23652076](https://doi.org/10.5281/zenodo.23652076) is reserved for the deposit.** The commands below describe that matched release once published, or work with the supplied local artifact package and matching checkout. A code-only clone does not include the experimental data.
+**Code and data:** software version [`v0.1.0`](https://github.com/marcoscabanas/opensky-pqc-eval/tree/v0.1.0) corresponds to the recordings, signed workloads and reference results uploaded to Zenodo under DOI [10.5281/zenodo.23652076](https://doi.org/10.5281/zenodo.23652076). A code-only clone does not include the experimental data. Follow the tagged-clone instructions below to obtain the software that matches those artifacts.
 
 ## 1. Choose what to reproduce
 
@@ -17,17 +17,17 @@ The completed study contains **480 replay cases**, **24 signed workloads**, and 
 
 ## 2. Obtain the matching code and data
 
-Use the **[GitHub `v0.1.0` tag](https://github.com/marcoscabanas/opensky-pqc-eval/tree/v0.1.0) and [Zenodo artifact version 10.5281/zenodo.23652076](https://doi.org/10.5281/zenodo.23652076)**, not whichever code happens to be on the default branch. These links will become available when the prepared release and reserved deposit are published. There is no continuous synchronization between the services: the release identifies the software, and `artifact_manifest.json` identifies the corresponding data and reference results. The restoration helper checks that the checkout matches the archived code before placing data in it.
+Use the **[GitHub `v0.1.0` tag](https://github.com/marcoscabanas/opensky-pqc-eval/tree/v0.1.0) and [Zenodo artifact version 10.5281/zenodo.23652076](https://doi.org/10.5281/zenodo.23652076)** together. The default branch may contain later documentation or development changes; the tag preserves the exact software files archived with the experiment. There is no continuous synchronization between the services: the release identifies the software, and `artifact_manifest.json` identifies the corresponding data and reference results. The restoration helper checks every archived code file, including the README, before placing data in the checkout.
 
-Once the release is published, clone it:
+Clone the matching version. `--depth 1` avoids downloading historical development data:
 
 ```bash
-git clone --branch v0.1.0 --single-branch https://github.com/marcoscabanas/opensky-pqc-eval.git
+git clone --depth 1 --branch v0.1.0 --single-branch https://github.com/marcoscabanas/opensky-pqc-eval.git
 cd opensky-pqc-eval
 mkdir -p ../zenodo-downloads
 ```
 
-Download the following files from [the matching Zenodo deposit](https://doi.org/10.5281/zenodo.23652076) into `../zenodo-downloads/` once it is published. Do not substitute an unrelated deposit or mix artifact versions.
+Download the following files from [the matching Zenodo deposit](https://doi.org/10.5281/zenodo.23652076) into `../zenodo-downloads/`. Do not substitute an unrelated deposit or mix artifact versions.
 
 | Workflow | Required downloads | Approximate download size | Restore profile |
 | --- | --- | ---: | --- |
@@ -204,3 +204,19 @@ Both windows are **conditional simulations**, not calibrated operational RF-loss
 Ordinary reception and authentication are separate: signing retained message copies does not hold ordinary transmission, although an already transmitting authentication fragment can delay a message sharing the aircraft's radio. Every recorded frame is accepted in the no-authentication baseline. Added-traffic capture results depend on seeded interference assumptions; no-interference controls isolate processing, transmission pacing and queues.
 
 Software is [MIT licensed](LICENSE). Recordings and generated experimental artifacts are **CC BY 4.0**. Local environments, logs, locks and restart checkpoints are not publication artifacts. Use the matching software tag and Zenodo version linked above when citing or reproducing this release.
+
+## Authors
+
+This repository accompanies the paper *Trace-Driven Evaluation of Post-Quantum Authentication for ADS-B Using OpenSky Network Data*, by:
+
+| Author | Affiliation(s) |
+| --- | --- |
+| **Marcos Cabañas Maldonado** | Faculty of Aerospace Engineering, Delft University of Technology, Delft, Netherlands |
+| **Junzi Sun** | Faculty of Aerospace Engineering, Delft University of Technology, Delft, Netherlands; OpenSky Network, Burgdorf, Switzerland |
+| **Martin Strohmeier** | Cyber-Defence Campus, armasuisse Science & Technology, Zurich, Switzerland; OpenSky Network, Burgdorf, Switzerland |
+
+Corresponding author: Marcos Cabañas Maldonado — [marcoscabanas@outlook.com](mailto:marcoscabanas@outlook.com).
+
+## Acknowledgements
+
+This work is partially supported by the PostQat project, funded by the European Union’s Horizon Europe research and innovation program through the SESAR Joint Undertaking under grant no. **101286435**. Views and opinions expressed are those of the authors only and do not necessarily reflect those of the European Union or SESAR3 Joint Undertaking. Neither the European Union nor SESAR3 Joint Undertaking can be held responsible for them.
